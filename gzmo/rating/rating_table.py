@@ -29,6 +29,12 @@ class RatingTable(pd.DataFrame):
         # input and output columns
         self.inputs = []
         self.outputs = []
+        
+        # TODO: place here or in rating plan?
+        # The operation that should be used to combine
+        #   the result of this rating table with the
+        #   immediately previous step of the rating plan
+        # self.operation = ''
 
         # information about the rating table
         self.name = None
@@ -84,7 +90,9 @@ class RatingTable(pd.DataFrame):
                 outputs.append(cleaned)
                 self.outputs.append(cleaned)
 
-        # create new index
+        # Create new index
+        # Note that interval ranges are assumed to be closed on both ends,
+        #  consistent with how rating plans are usually built. 
         new_indices = []
         for c in self.inputs:
             if c in interval_inputs:
@@ -94,6 +102,7 @@ class RatingTable(pd.DataFrame):
                 # create pandas interval index
                 idx = pd.IntervalIndex.from_arrays(
                     self[f'_{c}_left'], self[f'_{c}_right'],
+                    closed = 'left',
                     name=c
                 )
                 new_indices.append(idx)
