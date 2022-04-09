@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 
 import pandas as pd
-from sympy import comp
+import numpy as np
 
 from gzmo.rating import rating_table
 
@@ -38,11 +38,11 @@ class RatingPlan:
         self.rating_steps[rating_step.name] = rating_step
         return
 
-    def rate(self, policies, results):
+    def rate(self, book, results):
         # each rating table is a rating step
         # and each operation is also a rating step
         for rating_step_name, rating_step in self.rating_steps.items():
-            rating_step.rate(policies, results)
+            rating_step.rate(book, results)
         return
 
 
@@ -54,25 +54,24 @@ class RatingStep(ABC):
         self.name = name
     
     @abstractmethod
-    def calculate(self, policies, results):
-        """Override this method to provide user-defined calculation.
-        The method should take *policies* and *results* as arguments,
-        and return a factor indexed by identifying characteristics,
-        as a dataframe.
+    def evaluate(self, book, results):
+        """Override this method to provide user-defined evaluation.
+        The method should take *book* and *results* as arguments,
+        and return a dataframe indexed by identifying characteristics.
 
         Additional parameters (e.g. hard-coded values) can be added
         to the `RatingStep` instance itself.
 
         Args:
-            policies (RatingLevel): this is a rating_level.RatingLevel
+            book (RatingLevel): this is a rating_level.RatingLevel
                 object that allows access of lower-level attributes
                 via the `.` method.
             results (RatingResults): TODO
         """
         pass
 
-    def rate(self, policies, results):
-        result = self.calculate(policies, results)
+    def rate(self, book, results):
+        result = self.calculate(book, results)
         assert isinstance(result, pd.DataFrame), \
                 f"RatingStep {self.name}'s `calculate` method must" + \
                 "return a factor as a pandas dataframe."
@@ -140,14 +139,10 @@ class RatingTable(pd.DataFrame, RatingStep):
         # input and output columns
         self.inputs = []
         self.outputs = []
-        
-        # TODO: place here or in rating plan?
-        # The operation that should be used to combine
-        #   the result of this rating table with the
-        #   immediately previous step of the rating plan
-        # self.operation = ''
-
-
+        # Whether this table uses wildcards
+        # Note that wildcard in ranges are converted to -infs and infs,
+        #   and thus don't count as wildcards.
+        self._has_wildcards = False
 
         # format the table
         self.prime()
@@ -166,8 +161,15 @@ class RatingTable(pd.DataFrame, RatingStep):
 
     def prime(self):
         """Formats the inputs and outputs given rating plan information.
+
+        This creates a pd.MultiIndex for the dataframe. A MultiIndex
+            allows using multiple inputs. To keep things consistent,
+            we will use a MultiIndex regardless of how many inputs
+            there are.
         """
+
         # first identify the inputs and outputs
+        # Also take care of wildcards
         # All inputs start wtih "_"
         # interval inputs start with "_" and have two columns ending
         #   with "_left" and "_right"
@@ -178,17 +180,29 @@ class RatingTable(pd.DataFrame, RatingStep):
         outputs = []
         for c in self.columns:
             if c.startswith('_'):
-                if c.endswith('_left') or c.endswith('_right'):
+                # Ranges
+                if c.endswith('_left'):
                     cleaned = c[1:].replace('_left', '').replace('_right', '')
-                    if cleaned not in self.inputs:
-                        interval_inputs.append(cleaned)
-                        self.inputs.append(cleaned)
+                    # Add to list of inputs
+                    interval_inputs.append(cleaned)
+                    self.inputs.append(cleaned)
+                    # Convert wildcards to -inf and
+                    # cast to float for performance
+                    self[c] = self[c].replace('*', -np.inf).astype(float)
+                elif c.endswith('_right'):
+                    # _right columns don't need to be added to input list
+                    self[c] = self[c].replace('*', np.inf).astype(float)
+                # Other inputs
                 else:
-                    # TODO: add warning
+                    # add to input list
                     cleaned = c[1:]
                     other_inputs.append(cleaned)
                     self.inputs.append(cleaned)
+                    # Make a note of wildcard usage, if any
+                    if (self[c]=='*').any():
+                        self._has_wildcards = True
             elif c.endswith('_'):
+                # add outputs to the list of outputs
                 cleaned = c[:-1]
                 outputs.append(cleaned)
                 self.outputs.append(cleaned)
@@ -199,13 +213,14 @@ class RatingTable(pd.DataFrame, RatingStep):
         new_indices = []
         for c in self.inputs:
             if c in interval_inputs:
+                # Check that if interval, both _left and _right are defined
                 assert ((f'_{c}_left' in self.columns)
                         and (f'_{c}_right' in self.columns)), \
                     f'Missing column for interval input {c}'
                 # create pandas interval index
                 idx = pd.IntervalIndex.from_arrays(
                     self[f'_{c}_left'], self[f'_{c}_right'],
-                    closed = 'left',
+                    closed = 'both',
                     name=c
                 )
                 new_indices.append(idx)
@@ -214,15 +229,55 @@ class RatingTable(pd.DataFrame, RatingStep):
                 new_indices.append(idx)
 
         # create new dataframe
-        self.set_index(new_indices, inplace=True)
-        # rename the columns and subset
+        self.set_index(pd.MultiIndex.from_arrays(new_indices), inplace=True)
+        # rename the columns
         self.rename(columns = {f'{c}_': c for c in outputs}, inplace = True)
-        self.columns.difference(outputs)
+        # Is there a way to keep certain columns?
+        # We can't assign the result to another variable
         self.drop(self.columns.difference(outputs), axis = 1, inplace = True)
     
 
-    def calculate(policies, results):
-        TODO
+    def evaluate(self, book, results):
+        """This method will search for the input columns from book
+            and results, and return the appropriate output rows.
+
+            For rating table with wildcrads, it will perform an additional
+                step. Essentially, it checks whether each input is in the
+                non-wildcard options in the rating table. If it is, it uses
+                the unmodified input value to find a match. Otherwise, it
+                uses '*' to find a match.
+
+        Args:
+            book (RatingLevel): this is a rating_level.RatingLevel
+                object that allows access of lower-level attributes
+                via the `.` method.
+            results (_type_): TODO
+        """
+
+        # rating table must have multi index, even if just 1 column
+        # then we can do self.reindex(df_inputs.to_records(index = False).tolist())
+        inputs_to_process = []
+        if self._has_wildcards:
+            for i in self.inputs:
+                input_to_process = None
+                # First try to see if the attribute is in the book
+                try:
+                    input_to_process = getattr(book, i)
+                except AttributeError:
+                    try:
+                        input_to_process = getattr(results, i)
+                    except AttributeError:
+                        pass
+                if input_to_process is None:
+                    raise AttributeError (
+                        f'Input {i} not found for rating table {self.name}.')
+                inputs_to_process.append(input_to_process)
+            # Having gathered all the inputs, create a MultiIndex
+            #   to access the rating tables
+            inputs_to_process
+
+
+
         pass
 
 
