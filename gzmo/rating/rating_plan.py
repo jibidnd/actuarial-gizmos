@@ -3,8 +3,6 @@ from abc import ABC, abstractmethod
 import pandas as pd
 import numpy as np
 
-from gzmo.rating import rating_table
-
 
 class RatingPlan:
     """This class handles the initialization of a rating plan."""
@@ -22,14 +20,13 @@ class RatingPlan:
         Args:
             See pandas.read_excel documentation for details.
         """
-        excel_file = pd.read_excel(*args, **kwargs)
+        excel_file = pd.read_excel(io, *args, **kwargs)
         for table_name, table in excel_file.items():
             rating_table = rating_table.RatingTable(table_name, table)
             self.add_rating_table(table_name, table)
-        
         return
 
-    def add_rating_table(self, name: str, rating_table: rating_table) -> None:  
+    def add_rating_table(self, name: str, rating_table: RatingTable) -> None:  
         self.rating_tables[name]= rating_table
         self.add_rating_step(name, rating_table)
         return
@@ -44,8 +41,6 @@ class RatingPlan:
         for rating_step_name, rating_step in self.rating_steps.items():
             rating_step.rate(book, results)
         return
-
-
 
 class RatingStep(ABC):
 
@@ -63,15 +58,17 @@ class RatingStep(ABC):
         to the `RatingStep` instance itself.
 
         Args:
-            book (RatingLevel): this is a rating_level.RatingLevel
+            book (Level): this is a core.Level
                 object that allows access of lower-level attributes
                 via the `.` method.
-            results (RatingResults): TODO
+            results (RatingResults): this is a rating_results.RatingResults
+                object that hosts intermediate variables and factors
+                that have been determined.
         """
         pass
 
     def rate(self, book, results):
-        result = self.calculate(book, results)
+        result = self.evaluate(book, results)
         assert isinstance(result, pd.DataFrame), \
                 f"RatingStep {self.name}'s `calculate` method must" + \
                 "return a factor as a pandas dataframe."
@@ -139,6 +136,10 @@ class RatingTable(pd.DataFrame, RatingStep):
         # input and output columns
         self.inputs = []
         self.outputs = []
+        # All possible input values as {input: set(values)}
+        # Excludes wildcards
+        self.possible_input_values = {}
+
         # Whether this table uses wildcards
         # Note that wildcard in ranges are converted to -infs and infs,
         #   and thus don't count as wildcards.
@@ -154,10 +155,58 @@ class RatingTable(pd.DataFrame, RatingStep):
     # def _constructor(self):
     #     return RatingTable
 
-    # def __call__(self, inputs):
-    #     # TODO
-    #     # multiple inputs? range inputs?
-    #     return self.loc[inputs]
+    def __call__(self, inputs: list or tuple):
+        """Returns 
+
+        Args:
+            inputs (tuple or list of tuples): The inputs to
+                process.
+                If a tuple is passed, it is interpreted as one
+                    set of inputs.
+                If a list of tuples is passed, it is interpreted
+                    as multiple sets of inputs
+
+        Returns:
+            pd.DataFrame: A DataFrame of the corresponding rows.
+        """
+
+        def format_tuple(tuple_inputs):
+
+            # First check that the lenth of inputs is appropriate
+            assert len(inputs) == len(self.inputs), \
+                f'{self.name} requires inputs {self.inputs}' + \
+                f' but received inputs {tuple}.'
+
+            # Process the inputs if there are wildcards
+            if self._has_wildcards:
+                # initialize list for formatted inputs
+                formatted_inputs = []
+                for input_name, passed_input in zip(self.inputs, tuple_inputs):
+                    table_inputs = self.index.get_level_values(input_name)
+                    # Nothing to do if this is an interval input,
+                    #   since there are no wildcards for interval inputs.
+                    if isinstance(table_inputs, pd.IntervalIndex):
+                        formatted_inputs.append(passed_input)
+                    else:
+                        if passed_input in table_inputs:
+                            formatted_inputs.append(passed_input)
+                        else:
+                            formatted_inputs.append('*')
+                    formatted_inputs = tuple(formatted_inputs)
+            else:
+                formatted_inputs = inputs
+            return formatted_inputs
+
+
+        if isinstance(inputs, tuple):
+            # Simply wrap the tuple in a list and call the method again
+            return self([formatted_inputs])
+        else:
+            # Format the tuple
+            formatted_inputs = [format_tuple(i) for i in inputs]
+            # Return the selected rows
+            return self.reindex(formatted_inputs)
+
 
     def prime(self):
         """Formats the inputs and outputs given rating plan information.
@@ -227,6 +276,8 @@ class RatingTable(pd.DataFrame, RatingStep):
             else:
                 idx = pd.Index(self[f'_{c}'], name = c)
                 new_indices.append(idx)
+            # keep track of all possible input values
+            self.possible_input_values[c] = set(idx)
 
         # create new dataframe
         self.set_index(pd.MultiIndex.from_arrays(new_indices), inplace=True)
@@ -248,45 +299,46 @@ class RatingTable(pd.DataFrame, RatingStep):
                 uses '*' to find a match.
 
         Args:
-            book (RatingLevel): this is a rating_level.RatingLevel
+            book (Level): this is a core.Level
                 object that allows access of lower-level attributes
                 via the `.` method.
-            results (_type_): TODO
+            results (RatingResults): this is a rating_results.RatingResults
+                object that hosts intermediate variables and factors
+                that have been determined.
         """
 
         # rating table must have multi index, even if just 1 column
         # then we can do self.reindex(df_inputs.to_records(index = False).tolist())
-        inputs_to_process = []
+        
+        # Gather the inputs
+        # Need to loop because Level.get only returns something
+        #   if all the keys are present
+        inputs_to_process = None
+        for i in self.inputs:
+            input_to_process = book.get(i) or results.get(i)
+            if input_to_process is not None:
+                if inputs_to_process is None:
+                    inputs_to_process = input_to_process
+                else:
+                    inputs_to_process = \
+                        inputs_to_process.join(input_to_process)
+            else:
+                raise AttributeError(
+                    f'Input {i} not found.')
+        # Process the inputs if there are wildcards
         if self._has_wildcards:
             for i in self.inputs:
-                input_to_process = None
-                # First try to see if the attribute is in the book
-                try:
-                    input_to_process = getattr(book, i)
-                except AttributeError:
-                    try:
-                        input_to_process = getattr(results, i)
-                    except AttributeError:
-                        pass
-                if input_to_process is None:
-                    raise AttributeError (
-                        f'Input {i} not found for rating table {self.name}.')
-                inputs_to_process.append(input_to_process)
-            # Having gathered all the inputs, create a MultiIndex
-            #   to access the rating tables
-            inputs_to_process
-
-
-
-        pass
-
-
-
-
-# credit_tier_factor = RatingTable(df_credit_tier_table)
-# def rating_steps(book, results):
-#     premium = \
-#         book.apply(credit_tier_factor) * \
-#         results.driver_age_factor * \
-#         results.vehicle_age_factor
-#     return premium
+                # Nothing to do if this is an interval input,
+                #   since there are no wildcards for interval inputs.
+                if isinstance(self.index.get_level_values(i), pd.IntervalIndex):
+                    pass
+                else:
+                    # If an input is not in the non-wildcard set,
+                    #   replace it with '*'
+                    inputs_to_process[i] = inputs_to_process[i].where(
+                        inputs_to_process[i].isin(self.possible_input_values[i]),
+                        '*'
+                    )
+        # get and return the outputs
+        return self.reindex(inputs_to_process.to_records(index = False).tolist())
+            

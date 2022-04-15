@@ -1,8 +1,7 @@
 import itertools
-from matplotlib.cbook import flatten
 import pandas as  pd
 
-class RatingLevel(pd.DataFrame):
+class Level(pd.DataFrame):
     """A class to represent a "level" for rating.
         For example, accounts, policies, drivers, vehicles,
         households, or fleets.
@@ -15,25 +14,23 @@ class RatingLevel(pd.DataFrame):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        
+        # Check that index is not duplicated
+        assert not self.index.has_duplicates, \
+            'Levels are not allowed to have duplicated indices'
+
         # sublevels should be indexed at least as granular as self
         #   examples include drivers or vehicles under a policy
         self.sublevels = {}
-        # TODO: check that index is not duplicated
+        
 
     # to retain subclasses through pandas data manipulations
     # https://pandas.pydata.org/docs/development/extending.html
     @property
     def _constructor(self):
-        return RatingLevel
+        return Level
 
-    # @property
-    # def _constructor_sliced(self):
-    #     return RatingAttribute
-
-    # not to be confused with __getattribute__
-    # __getattr__ is only invoked when the attribute is
-    #   not found in usual ways
-    # __getattribute__ is invoked before looking at the actual attribute
+    # Tossing this code but may recycle later
     # def __getattr__(self, name: str):
     #     """Searches and returns an attribute in self, self.sublevels,
     #         or self.records.
@@ -95,7 +92,12 @@ class RatingLevel(pd.DataFrame):
     #                 pass
         
     #     return super().__getattr__(name)
-
+    
+    
+    # not to be confused with __getattribute__
+    # __getattr__ is only invoked when the attribute is
+    #   not found in usual ways
+    # __getattribute__ is invoked before looking at the actual attribute
     def __getattr__(self, name: str):
         """Searches and returns an attribute in self or self.sublevels.
 
@@ -130,10 +132,18 @@ class RatingLevel(pd.DataFrame):
     
     def get(self, key, default = None):
         """Overrides panda's `.get`.
-            Get item from object for given key (ex: DataFrame column).
+            Get item(s) given key(s) (ex: DataFrame column(s)).
             Returns default value if not found.
+
+            This is handy when we want to get a list of columns
+            that are at different levels (e.g. credit score from
+            policy level and vehicle age from vehicle level). Simply
+            pass a list as key and the method will return the requested
+            items indexed at the highest level.
+
             # TODO: what happens if a column uses something other
             #   than a string as a column name?
+            # TODO: check index levels of join
 
         Args:
             key (object): The key identifying the object to return
@@ -148,6 +158,7 @@ class RatingLevel(pd.DataFrame):
             for sublevel_name, sublevel in self.sublevels.items():
                 if ret:= sublevel.get(key) is not None:
                     return ret
+        
         # If we get here, the key does not belong to the current level
         #   or any single sublevel. Need to do some joinery.
         joined = None
@@ -162,7 +173,9 @@ class RatingLevel(pd.DataFrame):
                 f'Unable to get {key} from rating level.')
         else:
             # Flatten the iterator to treat each item sequentially
-            flattened_keys = list(itertools.chain.from_iterable(key))
+            flattened_keys = list(itertools.chain.from_iterable(iterator))
+            # Keep track of indices processed for join condition check
+            processed_indices = set()
             for k in flattened_keys:
                 try:
                     # This should get us a pd.Series
@@ -171,24 +184,34 @@ class RatingLevel(pd.DataFrame):
                     raise AttributeError(
                         f'Cannot get {key} from rating level.')
                 else:
+                    # Check join condition
+                    current_indices = set(item_to_join.index.names)
+                    assert (
+                        current_indices.issubset(processed_indices) |
+                        processed_indices.issubset(current_indices)
+                    ), \
+                        f'Indices of requested items must be subsets of' + \
+                        f' each other. {k} has indices {current_indices}' + \
+                        f' but prior indices were {processed_indices}.'
+                    # if no error, continue to join with prior results
                     if joined is None:
                         joined = item_to_join.to_frame()
                     else:
                         joined = joined.join(item_to_join)
+                    # Add processed indices to set
+                    processed_indices |= current_indices
+            
             return joined
 
 
-
-        
-        # otherwise do some joinery
         
 
 
 
-    def add_sublevels(self, name: str, sublevel: RatingLevel):
+    def add_sublevels(self, name: str, sublevel: Level):
         self.sublevels[name] = sublevel
     
-    def add_records(self, name: str, records: RatingLevel):
+    def add_records(self, name: str, records: Level):
         self.records[name] = records
     
     # TODO: handling missing data
@@ -211,7 +234,3 @@ class RatingLevel(pd.DataFrame):
 # class RatingAttribute(pd.Series):
 #     pass
 
-
-book.primary_driver_age
-
-book.driver.primary_driver_age
