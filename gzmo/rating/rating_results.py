@@ -13,21 +13,29 @@ class RatingResults(dict):
         # TODO: anything to add?
 
     def __getattr__(self, name: str):
-        """Searches and returns an attribute in the result dataframes"""
-        for item_name, item in self.items():
-            # First check if any dataframe is named `name`
-            if item_name == name:
-                return item
-            else:
-                # Otherwise loop through each dataframe's columns
-                # to see if we have a column named `name`
-                for column in item:
-                    if column == name:
-                        return item[column]
+
+        if ret := self.get(name) is not None:
+            return ret
+        else:
+            # Raise an error
+            raise AttributeError(f"Item {name} not found in results.")
+
+    def get(self, key: str, default = None):
+        # First check if any key is equal to `key`
+        if (res := super().get(key)) is not None:
+            return res
+        else:
+            # Otherwise loop through each dataframe's columns
+            # to see if we have a column named `name`
+            for df in self.values():
+                try:
+                    return df[key]
+                except KeyError:
+                    pass
         
         # If we get here that means we didn't find anything
-        # Raise an error
-        raise AttributeError(f"Item {name} not found in results.")
+        # Return the default value
+        return default
 
 
     def register(self, name: str, result: pd.DataFrame) -> None:

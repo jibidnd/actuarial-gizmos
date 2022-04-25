@@ -116,19 +116,17 @@ class Level(pd.DataFrame):
         Raises:
             AttributeError: If the attribute cannot be found.
         """
-
-        for sublevel_name, sublevel in self.sublevels.items():
-            # 1. Is `name` a sublevel?
-            if sublevel_name == name:
-                return sublevel
-            # 2. Is `name` an attribute of a sublevel?
+        # First see if the dataframe returns anything
+        try:
+            return getattr(super(), name)
+        except AttributeError:
+            # If the dataframe doesn't return anything, go to our `get` method
+            if (ret :=  self.get(name)) is not None:
+                return ret
             else:
-                try:
-                    return getattr(sublevel, name)
-                except AttributeError:
-                    pass
-        
-        return super().__getattr__(name)
+                raise AttributeError(f'Attribute {name} cannot be found.')
+
+
     
     def get(self, key, default = None):
         """Overrides panda's `.get`.
@@ -156,8 +154,17 @@ class Level(pd.DataFrame):
         # If not, also check sublevels
         else:
             for sublevel_name, sublevel in self.sublevels.items():
-                if ret:= sublevel.get(key) is not None:
+                # 1. Is `key` a sublevel?
+                if sublevel_name == key:
+                    return sublevel
+                # 2. Is `key` an attribute of a sublevel?
+                elif (ret := sublevel.get(key)) is not None:
                     return ret
+        
+        # if the key is a single string,
+        # getting here means we can't find it
+        if isinstance(key, str):
+            return default
         
         # If we get here, the key does not belong to the current level
         #   or any single sublevel. Need to do some joinery.
@@ -165,12 +172,9 @@ class Level(pd.DataFrame):
         try:
             iterator = iter(key)
         except TypeError as e:
-            # If the key is not iterable, it is a single key.
-            # We have checked that the key does not belong to the
-            #   current level or any single sublevel, so the key
-            #   cannot be found.
-            raise AttributeError(
-                f'Unable to get {key} from rating level.')
+            # If the key is not iterable, it is a single key
+            #   that cannot be found.
+            return default
         else:
             # Flatten the iterator to treat each item sequentially
             flattened_keys = list(itertools.chain.from_iterable(iterator))
@@ -181,8 +185,8 @@ class Level(pd.DataFrame):
                     # This should get us a pd.Series
                     item_to_join = self.get(k)
                 except AttributeError:
-                    raise AttributeError(
-                        f'Cannot get {key} from rating level.')
+                    # Cannot get anything for this key. Return default value
+                    return default
                 else:
                     # Check join condition
                     current_indices = set(item_to_join.index.names)
@@ -202,10 +206,6 @@ class Level(pd.DataFrame):
                     processed_indices |= current_indices
             
             return joined
-
-
-        
-
 
 
     def add_sublevels(self, name: str, sublevel: Level):

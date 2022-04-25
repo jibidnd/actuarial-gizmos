@@ -1,7 +1,12 @@
+from __future__ import annotations
+
 from abc import ABC, abstractmethod
 
 import pandas as pd
 import numpy as np
+
+from gzmo import core
+from gzmo import rating
 
 
 class RatingPlan:
@@ -22,7 +27,7 @@ class RatingPlan:
         """
         excel_file = pd.read_excel(io, *args, **kwargs)
         for table_name, table in excel_file.items():
-            rating_table = rating_table.RatingTable(table_name, table)
+            rating_table = RatingTable(table_name, table)
             self.add_rating_table(table_name, table)
         return
 
@@ -35,11 +40,11 @@ class RatingPlan:
         self.rating_steps[rating_step.name] = rating_step
         return
 
-    def rate(self, book, results):
+    def rate(self, info: core.utils.Info):
         # each rating table is a rating step
         # and each operation is also a rating step
         for rating_step_name, rating_step in self.rating_steps.items():
-            rating_step.rate(book, results)
+            rating_step.rate(info)
         return
 
 class RatingStep(ABC):
@@ -49,26 +54,26 @@ class RatingStep(ABC):
         self.name = name
     
     @abstractmethod
-    def evaluate(self, book, results):
+    def evaluate(self, info: core.utils.Info):
         """Override this method to provide user-defined evaluation.
-        The method should take *book* and *results* as arguments,
+        The method should take `info` as the only argument,
         and return a dataframe indexed by identifying characteristics.
 
         Additional parameters (e.g. hard-coded values) can be added
-        to the `RatingStep` instance itself.
+        to the `RatingStep` instance itself as attributes.
 
         Args:
-            book (Level): this is a core.Level
-                object that allows access of lower-level attributes
-                via the `.` method.
-            results (RatingResults): this is a rating_results.RatingResults
-                object that hosts intermediate variables and factors
-                that have been determined.
+            info (core.utils.Info): This is a class that allows
+                access to book info and any rated resuls.
         """
         pass
 
-    def rate(self, book, results):
-        result = self.evaluate(book, results)
+    def rate(
+        self,
+        info: core.utils.Info,
+        results: rating.rating_results.RatingResults
+        ):
+        result = self.evaluate(info)
         assert isinstance(result, pd.DataFrame), \
                 f"RatingStep {self.name}'s `calculate` method must" + \
                 "return a factor as a pandas dataframe."
@@ -138,7 +143,7 @@ class RatingTable(pd.DataFrame, RatingStep):
         self.outputs = []
         # All possible input values as {input: set(values)}
         # Excludes wildcards
-        self.possible_input_values = {}
+        self.possible_input_values = dict()
 
         # Whether this table uses wildcards
         # Note that wildcard in ranges are converted to -infs and infs,
@@ -155,34 +160,32 @@ class RatingTable(pd.DataFrame, RatingStep):
     # def _constructor(self):
     #     return RatingTable
 
-    def __call__(self, inputs: list or tuple):
+    def __call__(self, inputs: list):
         """Returns 
 
         Args:
-            inputs (tuple or list of tuples): The inputs to
-                process.
-                If a tuple is passed, it is interpreted as one
-                    set of inputs.
-                If a list of tuples is passed, it is interpreted
-                    as multiple sets of inputs
+            inputs (list of lists): The inputs to process.
+                Each interior list is interpreted as a set of inputs.
 
         Returns:
             pd.DataFrame: A DataFrame of the corresponding rows.
         """
 
-        def format_tuple(tuple_inputs):
+        def format_sublist_input(sublist_inputs):
 
             # First check that the lenth of inputs is appropriate
-            assert len(inputs) == len(self.inputs), \
+            assert len(sublist_inputs) == len(self.inputs), \
                 f'{self.name} requires inputs {self.inputs}' + \
-                f' but received inputs {tuple}.'
+                f' but received inputs {sublist_inputs}.' + \
+                f' Note that each set of inputs must be' + \
+                f'passed as a tuple.'
 
             # Process the inputs if there are wildcards
             if self._has_wildcards:
                 # initialize list for formatted inputs
                 formatted_inputs = []
-                for input_name, passed_input in zip(self.inputs, tuple_inputs):
-                    table_inputs = self.index.get_level_values(input_name)
+                for input_name, passed_input in zip(self.inputs, sublist_inputs):
+                    table_inputs = self.possible_input_values[input_name]
                     # Nothing to do if this is an interval input,
                     #   since there are no wildcards for interval inputs.
                     if isinstance(table_inputs, pd.IntervalIndex):
@@ -192,20 +195,15 @@ class RatingTable(pd.DataFrame, RatingStep):
                             formatted_inputs.append(passed_input)
                         else:
                             formatted_inputs.append('*')
-                    formatted_inputs = tuple(formatted_inputs)
             else:
-                formatted_inputs = inputs
-            return formatted_inputs
+                formatted_inputs = sublist_inputs
+            return tuple(formatted_inputs)
 
 
-        if isinstance(inputs, tuple):
-            # Simply wrap the tuple in a list and call the method again
-            return self([formatted_inputs])
-        else:
-            # Format the tuple
-            formatted_inputs = [format_tuple(i) for i in inputs]
-            # Return the selected rows
-            return self.reindex(formatted_inputs)
+        # Format the tuple
+        formatted_inputs = [format_sublist_input(i) for i in inputs]
+        # Return the selected rows
+        return self.reindex(formatted_inputs)
 
 
     def prime(self):
@@ -255,7 +253,6 @@ class RatingTable(pd.DataFrame, RatingStep):
                 cleaned = c[:-1]
                 outputs.append(cleaned)
                 self.outputs.append(cleaned)
-
         # Create new index
         # Note that interval ranges are assumed to be closed on both ends,
         #  consistent with how rating plans are usually built. 
@@ -278,9 +275,13 @@ class RatingTable(pd.DataFrame, RatingStep):
                 new_indices.append(idx)
             # keep track of all possible input values
             self.possible_input_values[c] = set(idx)
-
+        
         # create new dataframe
-        self.set_index(pd.MultiIndex.from_arrays(new_indices), inplace=True)
+        # Cannot use self.set_index here as that apparently
+        #   flattens the multiindex if it only has one level.
+        #   See source code for details.
+        #   I don't understand it that well.
+        self.index = pd.MultiIndex.from_arrays(new_indices)
         # rename the columns
         self.rename(columns = {f'{c}_': c for c in outputs}, inplace = True)
         # Is there a way to keep certain columns?
@@ -288,9 +289,9 @@ class RatingTable(pd.DataFrame, RatingStep):
         self.drop(self.columns.difference(outputs), axis = 1, inplace = True)
     
 
-    def evaluate(self, book, results):
-        """This method will search for the input columns from book
-            and results, and return the appropriate output rows.
+    def evaluate(self, info: core.utils.Info):
+        """This method will search for the input columns from info,
+        and return the appropriate output rows.
 
             For rating table with wildcrads, it will perform an additional
                 step. Essentially, it checks whether each input is in the
@@ -299,12 +300,8 @@ class RatingTable(pd.DataFrame, RatingStep):
                 uses '*' to find a match.
 
         Args:
-            book (Level): this is a core.Level
-                object that allows access of lower-level attributes
-                via the `.` method.
-            results (RatingResults): this is a rating_results.RatingResults
-                object that hosts intermediate variables and factors
-                that have been determined.
+            info (core.utils.Info): This is a class that allows
+                access to book info and any rated resuls.
         """
 
         # rating table must have multi index, even if just 1 column
@@ -315,8 +312,7 @@ class RatingTable(pd.DataFrame, RatingStep):
         #   if all the keys are present
         inputs_to_process = None
         for i in self.inputs:
-            input_to_process = book.get(i) or results.get(i)
-            if input_to_process is not None:
+            if (input_to_process := info.get(i)) is not None:
                 if inputs_to_process is None:
                     inputs_to_process = input_to_process
                 else:
