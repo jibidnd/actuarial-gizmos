@@ -234,3 +234,5 @@ class Level(pd.DataFrame):
 # class RatingAttribute(pd.Series):
 #     pass
 
+
+# TODO: remove sublevels

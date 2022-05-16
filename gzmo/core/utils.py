@@ -16,20 +16,22 @@ class Info:
     def register(self, info):
         self._infos.append(info)
 
-    def get(self, key, default = None):
-        
+    def get(self, key, default = None, raise_ = False):
         # First try to loop through each info to see if we
         # get anything directly
         for info in self._infos:
-            if ret := info.get(key) is not None:
+            if (ret := info.get(key)) is not None:
                 return ret
         
         # if the key is a single string,
         # getting here means we can't find it
         if isinstance(key, str):
-            return default
+            if raise_:
+                raise AttributeError(f'Attribute {key} not found.')
+            else:
+                return default
         
-        # If we get here, the key does not belong to a
+        # If we get here, the key does not belong to any
         #   single object in self._infos.
         # Attempt to do some joinery (only works when each item
         #  requested in `key` is a pd.Series with joinable indices).
@@ -39,7 +41,10 @@ class Info:
         except TypeError as e:
             # If the key is not iterable and not a string.
             # it is a single key that cannot be found.
-            return default
+            if raise_:
+                raise AttributeError(f'Attribute {key} not found.')
+            else:
+                return default
         else:
             # Flatten the iterator to treat each item sequentially
             flattened_keys = list(itertools.chain.from_iterable(iterator))
@@ -50,8 +55,11 @@ class Info:
                     # This should get us a pd.Series
                     item_to_join = self.get(k)
                 except AttributeError:
-                    # Cannot get anything for this key. Return default value
-                    return default
+                    # Cannot get anything for this key.
+                    if raise_:
+                        raise
+                    else:
+                        return default
                 else:
                     # Check join condition
                     current_indices = set(item_to_join.index.names)
