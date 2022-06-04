@@ -100,7 +100,7 @@ class RatingTable(pd.DataFrame, RatingStep):
     def __init__(
             self,
             name: str,
-            *args,
+            df: pd.Dataframe,
             version: str = None,
             effective_date: str = None,
             serff_filing_number: str = None,
@@ -126,7 +126,7 @@ class RatingTable(pd.DataFrame, RatingStep):
             additional_info (dict, optional): Any additional info to be
                 attached to the rating table. Defaults to None.
         """
-        super().__init__(*args, **kwargs)
+        super().__init__(data = df.copy(), **kwargs)
         
         # information about the rating table
         self.name = name
@@ -144,12 +144,16 @@ class RatingTable(pd.DataFrame, RatingStep):
         # All possible input values as {input: set(values)}
         # Excludes wildcards
         self.possible_input_values = dict()
-        # The min and max possible values for interaval inputs
-        # Formatted as {input: (min, max)}
-        self.possible_input_ranges = dict()
+        # TODO: clean up
+        # # The min and max possible values for interaval inputs
+        # # Formatted as {input: (min, max)}
+        # self.possible_input_ranges = dict()
 
         # Whether this table uses wildcards
         self._has_wildcards = False
+        # Keep a marker of whether a row has any wildcards
+        # For intervals, (-inf, inf) or (*, *) are treated as wildcards
+        self._wildcard_markers = pd.DataFrame(index = range(len(self)))
 
         # format the table
         self.prime()
@@ -197,19 +201,21 @@ class RatingTable(pd.DataFrame, RatingStep):
                         pd.IntervalIndex)
                        
                     if is_interval_input:
-                        in_any_range = \
-                            any([passed_input in rng
-                                for rng in possible_inputs])
-                        # -np.inf is used as a marker for wildcards
-                        replacement_value = -np.inf
+                        pass
+                        # TODO: clean up
+                        # in_any_range = \
+                        #     any([passed_input in rng
+                        #         for rng in possible_inputs])
+                        # # -np.inf is used as a marker for wildcards
+                        # replacement_value = -np.inf
                         
-                        if in_any_range:
-                            formatted_inputs.append(passed_input)
-                        else:
-                            # Find a value that is larger than the max
-                            # this ensures that the modified input
-                            # will not match any of the non-wildcard intervals
-                            formatted_inputs.append(replacement_value)
+                        # if in_any_range:
+                        #     formatted_inputs.append(passed_input)
+                        # else:
+                        #     # Find a value that is larger than the max
+                        #     # this ensures that the modified input
+                        #     # will not match any of the non-wildcard intervals
+                        #     formatted_inputs.append(replacement_value)
                     else:
                         if passed_input in possible_inputs:
                             formatted_inputs.append(passed_input)
@@ -222,8 +228,33 @@ class RatingTable(pd.DataFrame, RatingStep):
 
         # Format the tuple
         formatted_inputs = [format_sublist_input(i) for i in inputs]
-        # Return the selected rows
-        return self.reindex(formatted_inputs)
+        # print(formatted_inputs)
+        # First try the rows with no wildcards
+        non_wildcard_rows = (~self._wildcard_markers).all(axis = 1)
+        first_pass = self.loc[non_wildcard_rows].reindex(formatted_inputs).values
+        # RESUME HERE
+        second_pass = []
+        for out in first_pass:
+            if np.isnan(out).all():
+
+            else:
+                second_pass.append(out)
+
+        # if there are input rows with no matching lookup columns,
+        # look in the wildcards
+        no_match = first_pass.isna().all(axis = 1)
+        # print(no_match)
+        # no_match = np.isnan(first_pass).all(axis = 1)
+        if not no_match.any(axis = 0):
+            return first_pass.values
+        else:
+            dict_outputs = 
+            wildcard_rows = self.loc[~non_wildcard_rows]
+            second_pass = wildcard_rows.reindex(
+                no_match.loc[no_match].index.map(lambda x: get_idx(x, wildcard_rows)))
+            print(first_pass)
+            print(no_match)
+            print(second_pass)
 
 
     def prime(self):
@@ -292,37 +323,37 @@ class RatingTable(pd.DataFrame, RatingStep):
                 double_wildcard = \
                     (self[f'_{c}_left'] == -np.inf) & \
                     (self[f'_{c}_right'] == np.inf)
-                # Also take note of "single wildcard" cases
-                # i.e. one end of the interval is open ended
-                single_wildcard = \
-                    (self[f'_{c}_left'] == -np.inf) != \
-                    (self[f'_{c}_right'] == np.inf)
-                # A table cannot have both single wildcards and
-                # double wildcards
-                # e.g. one row with (30, *)
-                # and another row with (*, *)
-                # since that is very ambiguous
-                assert not (any(single_wildcard) & any(double_wildcard)), \
-                    'A table with double wildcards (intervals with * as both' + \
-                    ' left and right ends) cannot also have single wildcards' + \
-                    ' (one of the left or right ends being a *).'
-                # for double wildcards, replace the right value to -np.inf
-                # any passed inputs not falling into other (non-wildcard)
-                # intervals will be assigned a value of -np.inf
-                # This is similar to '*' for other input types
-                self[f'_{c}_right'].loc[double_wildcard] = -np.inf
+                # # Also take note of "single wildcard" cases
+                # # i.e. one end of the interval is open ended
+                # single_wildcard = \
+                #     (self[f'_{c}_left'] == -np.inf) != \
+                #     (self[f'_{c}_right'] == np.inf)
+                # # A table cannot have both single wildcards and
+                # # double wildcards
+                # # e.g. one row with (30, *)
+                # # and another row with (*, *)
+                # # since that is very ambiguous
+                # assert not (any(single_wildcard) & any(double_wildcard)), \
+                #     'A table with double wildcards (intervals with * as both' + \
+                #     ' left and right ends) cannot also have single wildcards' + \
+                #     ' (one of the left or right ends being a *).'
+                # # for double wildcards, replace the right value to -np.inf
+                # # any passed inputs not falling into other (non-wildcard)
+                # # intervals will be assigned a value of -np.inf
+                # # This is similar to '*' for other input types
+                # self[f'_{c}_right'].loc[double_wildcard] = -np.inf
                 # create pandas interval index
                 idx = pd.IntervalIndex.from_arrays(
                     self[f'_{c}_left'], self[f'_{c}_right'],
                     closed = 'both',
                     name=c
                 )
-                # TODO: assert not overlapping
+                # TODO: assert not overlapping?
                 new_indices.append(idx)
-                # keep track of min and max accepted values
-                min_ = min([i.left for i in idx if i != -np.inf])
-                max_ = max([i.right for i in idx if i != np.inf])
-                self.possible_input_ranges[c] = (min_, max_)
+                # # keep track of min and max accepted values
+                # min_ = min([i.left for i in idx if i != -np.inf])
+                # max_ = max([i.right for i in idx if i != np.inf])
+                # self.possible_input_ranges[c] = (min_, max_)
             else:
                 idx = pd.Index(self[f'_{c}'], name = c)
                 new_indices.append(idx)
@@ -335,6 +366,12 @@ class RatingTable(pd.DataFrame, RatingStep):
         #   See source code for details.
         #   I don't understand it that well.
         self.index = pd.MultiIndex.from_arrays(new_indices)
+        # keep track of wildcard usage
+        wildcard_characters = [
+            pd.Interval(-np.inf, np.inf, closed = 'both'),
+            '*'
+        ]
+        self._wildcard_markers = self.index.to_frame().isin(wildcard_characters)
         # rename the columns
         self.rename(columns = {f'{c}_': c for c in outputs}, inplace = True)
         # Is there a way to keep certain columns?
@@ -393,6 +430,31 @@ class RatingTable(pd.DataFrame, RatingStep):
                 
         # get and return the outputs
         return self.reindex(inputs_to_process.to_records(index = False).tolist())
+
+def get_idx(passed_inputs, df_lookup):
+    wildcard_characters = [
+            pd.Interval(-np.inf, np.inf, closed = 'both'),
+            '*'
+        ]
+    matches = []
+    for passed_input, lookup_column in zip(passed_inputs, df_lookup.columns):
+        matches.append(
+            df_lookup[lookup_column].index.to_frame().isin(
+                wildcard_characters + [passed_input]
+            )
+        )
+    df_matches = pd.concat(matches, axis = 1)
+    try:
+        matched = df_matches.loc[df_matches.all(axis = 1)].index[0]
+    except IndexError:
+        matched = None
+    return matched
+    
+
+
+
+
+
 
 #TODO: add "slow" method to take care of wildcards that are not "everything other than possible values" 
 # but "anything"
