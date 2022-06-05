@@ -1,4 +1,3 @@
-from xml.dom.minidom import Attr
 import pandas as pd
 import numpy as np
 
@@ -14,7 +13,7 @@ class RatingResults(dict):
 
     def __getattr__(self, name: str):
 
-        if ret := self.get(name) is not None:
+        if (ret := self.get(name)) is not None:
             return ret
         else:
             # Raise an error
@@ -41,9 +40,6 @@ class RatingResults(dict):
     def register(self, name: str, result: pd.DataFrame) -> None:
         # can add checks here
         self[name] = result
-
-
-
 
 
 # credit_tier_factor = RatingTable(df_credit_tier_table)

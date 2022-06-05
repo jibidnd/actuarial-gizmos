@@ -17,8 +17,8 @@ def rating_table_simple():
 @pytest.fixture(scope = 'module')
 def test_input_simple():
     df = pd.DataFrame({
-        'age': [1, 18, 25, 21, 10000],
-        'safe_driving': [True, True, False, False, 'missing'],
+        'age': [1, 18, 25, 470, -1],
+        'safe_driving': [True, True, None, False, 'missing'],
         'credit_tier': ['C1', 'B1', 'D1', 'E1', 'X1']
     })
     return df
