@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from cgitb import lookup
+from typing import Union
 
 import pandas as pd
 import numpy as np
+from sklearn import utils
 
 from gzmo import core
 from gzmo import rating
@@ -141,6 +144,7 @@ class RatingTable(pd.DataFrame, RatingStep):
         # input and output columns
         self.inputs = []
         self.outputs = []
+        self.wildcard_characters = ['*']
         # All possible input values as {input: set(values)}
         # Excludes wildcards
         self.possible_input_values = dict()
@@ -165,96 +169,266 @@ class RatingTable(pd.DataFrame, RatingStep):
     # def _constructor(self):
     #     return RatingTable
 
-    def __call__(self, inputs: list):
-        """Returns 
+    def evaluate(self, *args, **kwargs):
+        if args:
+            if isinstance(args[0], dict):
+                return self._lookup(**args[0])
+            else:
+                try:
+                    inputs = args[0].get(self.inputs)
+                    return self._eval_impl(inputs)
+                except:
+                    return self._lookup(*args)
+        elif kwargs:
+            return self._lookup(**kwargs)
+
+
+
+# rating_table.evaluate('F1')
+# rating_table.evaluate(info)
+# rating_table.evaluate(df_drivers)
+# rating_table.evaluate(credit_tier = 'F1')
+# rating_table.evaluate({'credit_tier': 'F1'})
+        
+
+    def _eval_impl(self, input_table):
+        # first do _eval_reindex on non-wildcard rows of self for all rows in input_table
+        # if fails, just fill in with None
+        # then do eval_match on wildcard rows on any rows that do not yet have a value
+
+        # first use _eval_reindex on non-wildcard rows of self
+        lookup_table_nonwildcard = self.loc[(~self._wildcard_markers).values]
+        # need to remove the unused levels becuase they somehow mess up reindexing
+        # See https://pandas.pydata.org/docs/user_guide/advanced.html#defined-levels
+        lookup_table_nonwildcard.index = \
+            lookup_table_nonwildcard.index.remove_unused_levels()
+        try:
+            res_nonwildcard = self._eval_reindex(
+                input_table, lookup_table = lookup_table_nonwildcard)
+        # if reindex throws an error, go straight to using _eval_match
+        except:
+            res = self._eval_match(
+                input_table, lookup_table = self)
+            return res
+
+        # use self._eval_match to match on wildcard rows
+        lookup_table_wildcard = self.loc[self._wildcard_markers]
+        isna = res_nonwildcard.isna().all(axis = 1)
+        to_lookup = input_table.loc[isna]
+        res_wildcard = self._eval_match(
+            to_lookup, lookup_table = lookup_table_wildcard)
+        
+        # combine res_nonwildcard and res_wildcard
+        res = res_nonwildcard.fillna(res_wildcard)
+        # res = pd.concat([res_nonwildcard, res_wildcard], axis = 0, ignore_index = False)
+        # reorder to original index
+        res = res.loc[input_table.index]
+
+        return res
+        
+
+    def _eval_reindex(self, input_table, lookup_table = None):
+        """Uses df.reindex to look up rows that match 
+            each row of inputs in input_table.
 
         Args:
-            inputs (list of lists): The inputs to process.
-                Each interior list is interpreted as a set of inputs.
+            input_table (pd.DataFrame): A Pandas DataFrame containing the
+                inputs to be processed, with columns named like self.inputs.
+            lookup_table: The dataframe in which to lookup rows.
 
         Returns:
-            pd.DataFrame: A DataFrame of the corresponding rows.
+            pd.DataFrame: Rows in `self` with index matching the inputs.
+        
+        Raises:
+            ValueError: pandas multiindices do not play well with overlapping
+                intervals in the IntervalIndex, even if the multiindex itself
+                is unique. If there are rows with overlapping intervals,
+                may raise:
+                `ValueError: setting an array element with a sequence.`
         """
 
-        def format_sublist_input(sublist_inputs):
+        # reorder input columns
+        passed_inputs = input_table.loc[:, self.inputs]
 
-            # First check that the lenth of inputs is appropriate
-            assert len(sublist_inputs) == len(self.inputs), \
-                f'{self.name} requires inputs {self.inputs}' + \
-                f' but received inputs {sublist_inputs}.' + \
-                f' Note that each set of inputs must be' + \
-                f' passed as a tuple.'
+        # Define the lookup table
+        if lookup_table is None:
+            lookup_table = self
 
-            # Process the inputs if there are wildcards
-            if self._has_wildcards:
-                # initialize list for formatted inputs
-                formatted_inputs = []
-                # loop through each input to to replace them with something else
-                # if the input is not in the possible values
-                for input_name, passed_input in \
-                    zip(self.inputs, sublist_inputs):
-                    
-                    possible_inputs = \
-                        self.possible_input_values[input_name]
-                    is_interval_input = isinstance(
-                        self.index.get_level_values(input_name),
-                        pd.IntervalIndex)
-                       
-                    if is_interval_input:
-                        pass
-                        # TODO: clean up
-                        # in_any_range = \
-                        #     any([passed_input in rng
-                        #         for rng in possible_inputs])
-                        # # -np.inf is used as a marker for wildcards
-                        # replacement_value = -np.inf
-                        
-                        # if in_any_range:
-                        #     formatted_inputs.append(passed_input)
-                        # else:
-                        #     # Find a value that is larger than the max
-                        #     # this ensures that the modified input
-                        #     # will not match any of the non-wildcard intervals
-                        #     formatted_inputs.append(replacement_value)
-                    else:
-                        if passed_input in possible_inputs:
-                            formatted_inputs.append(passed_input)
-                        else:
-                            formatted_inputs.append('*')
-            else:
-                formatted_inputs = sublist_inputs
-            return tuple(formatted_inputs)
+        # perform the lookup
+        inputs = passed_inputs.to_records(index = False).tolist()
+        results = lookup_table.reindex(
+            index = inputs, columns = self.outputs, copy = True)
+        # use the inputs' index
+        results = results.set_index(passed_inputs.index)
 
+        return results
 
-        # Format the tuple
-        formatted_inputs = [format_sublist_input(i) for i in inputs]
-        # print(formatted_inputs)
-        # First try the rows with no wildcards
-        non_wildcard_rows = (~self._wildcard_markers).all(axis = 1)
-        first_pass = self.loc[non_wildcard_rows].reindex(formatted_inputs).values
-        # RESUME HERE
-        second_pass = []
-        for out in first_pass:
-            if np.isnan(out).all():
+        # except ValueError as err:
+        #     if str(err) == 'setting an array element with a sequence.':
+        #         raise Exception('')
 
-            else:
-                second_pass.append(out)
+    def _eval_match(self, input_table, lookup_table = None):
+        """Uses self._lookup to look up rows that match 
+            each row of inputs in input_table.
 
-        # if there are input rows with no matching lookup columns,
-        # look in the wildcards
-        no_match = first_pass.isna().all(axis = 1)
-        # print(no_match)
-        # no_match = np.isnan(first_pass).all(axis = 1)
-        if not no_match.any(axis = 0):
-            return first_pass.values
+        Args:
+            input_table (pd.DataFrame): A Pandas DataFrame containing the
+                inputs to be processed, with columns named like self.inputs.
+            lookup_df: The dataframe in which to lookup rows.
+
+        Returns:
+            pd.DataFrame: Rows in `self` with index matching the inputs.
+        """
+
+        # Define the lookup table
+        if lookup_table is None:
+            lookup_table = self
+        records = input_table.apply(
+            lambda row: self._lookup(
+                lookup_table = lookup_table, **row.to_dict()
+                ),
+            axis = 1
+            ).tolist()
+        # keep original index
+        result = pd.DataFrame.from_records(records, index = input_table.index)
+        
+        return result
+
+    def _lookup(self, *args, lookup_table = None, **kwargs):
+        """Pass one set of inputs to retrieve a mathching row as a dict.
+
+        Args:
+            *args: Inputs passed as non-keyword arguments must match the
+                order of `self.inputs`. Keyword arguments are ignored
+                if any non-keyword arguments are passed.
+            lookup_table: The dataframe in which to lookup rows.
+            **args: Inputs passed as keyword arguments must match
+                `self.inputs` exactly. Keyword arguments are ignored
+                if any non-keyword arguments are passed.
+        Returns:
+            dict: {input name: output value}
+        """
+        # First convert non-keyword arguments to a dict
+        if args:
+            passed_inputs = {k: v for k, v in zip(self.inputs, args)}
         else:
-            dict_outputs = 
-            wildcard_rows = self.loc[~non_wildcard_rows]
-            second_pass = wildcard_rows.reindex(
-                no_match.loc[no_match].index.map(lambda x: get_idx(x, wildcard_rows)))
-            print(first_pass)
-            print(no_match)
-            print(second_pass)
+            passed_inputs = {**kwargs}
+        
+        # Define the lookup table
+        if lookup_table is None:
+            lookup_table = self
+
+        # Find out what rows match the given inputs
+        matches = []
+        for input_name in self.inputs:
+            passed_input = passed_inputs[input_name]
+            lookup_column = lookup_table.index.get_level_values(input_name)
+            print(lookup_column)
+            if isinstance(lookup_column, pd.IntervalIndex):
+                matched = lookup_column.contains(passed_input)
+            else:
+                matched = lookup_column.isin(
+                    self.wildcard_characters + [passed_input]
+                )
+            matches.append(matched)
+        
+        matching_rows_filter = np.all(matches, axis = 0)
+        matching_rows = lookup_table.loc[matching_rows_filter]
+        if len(matching_rows) == 0:
+            return {k: None for k in self.inputs}
+        else:
+            return matching_rows.iloc[0].to_dict()
+
+    # def __call__(self, inputs: list):
+    #     """Returns 
+
+    #     Args:
+    #         inputs (list of lists): The inputs to process.
+    #             Each interior list is interpreted as a set of inputs.
+
+    #     Returns:
+    #         pd.DataFrame: A DataFrame of the corresponding rows.
+    #     """
+
+    #     # def format_sublist_input(sublist_inputs):
+
+    #     #     # First check that the lenth of inputs is appropriate
+    #     #     assert len(sublist_inputs) == len(self.inputs), \
+    #     #         f'{self.name} requires inputs {self.inputs}' + \
+    #     #         f' but received inputs {sublist_inputs}.' + \
+    #     #         f' Note that each set of inputs must be' + \
+    #     #         f' passed as a tuple.'
+
+    #     #     # Process the inputs if there are wildcards
+    #     #     if self._has_wildcards:
+    #     #         # initialize list for formatted inputs
+    #     #         formatted_inputs = []
+    #     #         # loop through each input to to replace them with something else
+    #     #         # if the input is not in the possible values
+    #     #         for input_name, passed_input in \
+    #     #             zip(self.inputs, sublist_inputs):
+                    
+    #     #             possible_inputs = \
+    #     #                 self.possible_input_values[input_name]
+    #     #             is_interval_input = isinstance(
+    #     #                 self.index.get_level_values(input_name),
+    #     #                 pd.IntervalIndex)
+                       
+    #     #             if is_interval_input:
+    #     #                 pass
+    #     #                 # TODO: clean up
+    #     #                 # in_any_range = \
+    #     #                 #     any([passed_input in rng
+    #     #                 #         for rng in possible_inputs])
+    #     #                 # # -np.inf is used as a marker for wildcards
+    #     #                 # replacement_value = -np.inf
+                        
+    #     #                 # if in_any_range:
+    #     #                 #     formatted_inputs.append(passed_input)
+    #     #                 # else:
+    #     #                 #     # Find a value that is larger than the max
+    #     #                 #     # this ensures that the modified input
+    #     #                 #     # will not match any of the non-wildcard intervals
+    #     #                 #     formatted_inputs.append(replacement_value)
+    #     #             else:
+    #     #                 if passed_input in possible_inputs:
+    #     #                     formatted_inputs.append(passed_input)
+    #     #                 else:
+    #     #                     formatted_inputs.append('*')
+    #     #     else:
+    #     #         formatted_inputs = sublist_inputs
+    #     #     return tuple(formatted_inputs)
+
+
+    #     # # Format the tuple
+    #     # formatted_inputs = [format_sublist_input(i) for i in inputs]
+    #     # print(formatted_inputs)
+    #     # First try the rows with no wildcards
+    #     non_wildcard_rows = (~self._wildcard_markers).all(axis = 1)
+    #     first_pass = self.loc[non_wildcard_rows].reindex(formatted_inputs).values
+    #     # RESUME HERE
+    #     second_pass = []
+    #     for out in first_pass:
+    #         if np.isnan(out).all():
+
+    #         else:
+    #             second_pass.append(out)
+
+    #     # if there are input rows with no matching lookup columns,
+    #     # look in the wildcards
+    #     no_match = first_pass.isna().all(axis = 1)
+    #     # print(no_match)
+    #     # no_match = np.isnan(first_pass).all(axis = 1)
+    #     if not no_match.any(axis = 0):
+    #         return first_pass.values
+    #     else:
+    #         dict_outputs = 
+    #         wildcard_rows = self.loc[~non_wildcard_rows]
+    #         second_pass = wildcard_rows.reindex(
+    #             no_match.loc[no_match].index.map(lambda x: get_idx(x, wildcard_rows)))
+    #         print(first_pass)
+    #         print(no_match)
+    #         print(second_pass)
 
 
     def prime(self):
@@ -371,84 +545,84 @@ class RatingTable(pd.DataFrame, RatingStep):
             pd.Interval(-np.inf, np.inf, closed = 'both'),
             '*'
         ]
-        self._wildcard_markers = self.index.to_frame().isin(wildcard_characters)
+        self._wildcard_markers = self.index.to_frame() \
+                                    .isin(wildcard_characters).all(axis = 1)
         # rename the columns
         self.rename(columns = {f'{c}_': c for c in outputs}, inplace = True)
         # Is there a way to keep certain columns?
         # We can't assign the result to another variable
         self.drop(self.columns.difference(outputs), axis = 1, inplace = True)
-    
 
-    def evaluate(self, info: core.utils.Info):
-        """This method will search for the input columns from info,
-        and return the appropriate output rows.
+#     def evaluate(self, info: core.utils.Info):
+#         """This method will search for the input columns from info,
+#         and return the appropriate output rows.
 
-            For rating table with wildcrads, it will perform an additional
-                step. Essentially, it checks whether each input is in the
-                non-wildcard options in the rating table. If it is, it uses
-                the unmodified input value to find a match. Otherwise, it
-                uses '*' to find a match.
+#             For rating table with wildcrads, it will perform an additional
+#                 step. Essentially, it checks whether each input is in the
+#                 non-wildcard options in the rating table. If it is, it uses
+#                 the unmodified input value to find a match. Otherwise, it
+#                 uses '*' to find a match.
 
-        Args:
-            info (core.utils.Info): This is a class that allows
-                access to book info and any rated resuls.
-        """
+#         Args:
+#             info (core.utils.Info): This is a class that allows
+#                 access to book info and any rated resuls.
+#         """
 
-        # rating table must have multi index, even if just 1 column
-        # then we can do self.reindex(df_inputs.to_records(index = False).tolist())
+#         # rating table must have multi index, even if just 1 column
+#         # then we can do self.reindex(df_inputs.to_records(index = False).tolist())
         
-        # Gather the inputs
-        # May raise if info cannot get all of self.inputs,
-        # or if inputs are on incompatible indices (cannot be joined)
-        inputs_to_process = info.get(self.inputs)
-        # Process the inputs if there are wildcards
-        if self._has_wildcards:
-            for input_name in self.inputs:
+#         # Gather the inputs
+#         # May raise if info cannot get all of self.inputs,
+#         # or if inputs are on incompatible indices (cannot be joined)
+#         inputs_to_process = info.get(self.inputs)
+#         # Process the inputs if there are wildcards
+#         if self._has_wildcards:
+#             for input_name in self.inputs:
                 
-                possible_inputs = self.possible_input_values[input_name]
-                is_interval_input = isinstance(
-                    self.index.get_level_values(input_name), pd.IntervalIndex)
+#                 possible_inputs = self.possible_input_values[input_name]
+#                 is_interval_input = isinstance(
+#                     self.index.get_level_values(input_name), pd.IntervalIndex)
                 
-                if is_interval_input:
-                    in_any_range = inputs_to_process[input_name].map(
-                        lambda x: any([x in rng for rng in possible_inputs]))
-                    # -np.inf is used as a marker for wildcards
-                    replacement_value = -np.inf
-                    inputs_to_process[input_name] = \
-                        inputs_to_process[input_name].where(
-                            in_any_range, replacement_value)
+#                 if is_interval_input:
+#                     in_any_range = inputs_to_process[input_name].map(
+#                         lambda x: any([x in rng for rng in possible_inputs]))
+#                     # -np.inf is used as a marker for wildcards
+#                     replacement_value = -np.inf
+#                     inputs_to_process[input_name] = \
+#                         inputs_to_process[input_name].where(
+#                             in_any_range, replacement_value)
                 
-                else:
-                    matches_any_value = \
-                        inputs_to_process[input_name].isin(possible_inputs)
-                    # If an input is not in the non-wildcard set,
-                    #   replace it with '*'
-                    replacement_value = '*'
-                    inputs_to_process[input_name] = \
-                        inputs_to_process[input_name].where(
-                        matches_any_value, replacement_value)
+#                 else:
+#                     matches_any_value = \
+#                         inputs_to_process[input_name].isin(possible_inputs)
+#                     # If an input is not in the non-wildcard set,
+#                     #   replace it with '*'
+#                     replacement_value = '*'
+#                     inputs_to_process[input_name] = \
+#                         inputs_to_process[input_name].where(
+#                         matches_any_value, replacement_value)
                 
-        # get and return the outputs
-        return self.reindex(inputs_to_process.to_records(index = False).tolist())
+#         # get and return the outputs
+#         return self.reindex(inputs_to_process.to_records(index = False).tolist())
 
-def get_idx(passed_inputs, df_lookup):
-    wildcard_characters = [
-            pd.Interval(-np.inf, np.inf, closed = 'both'),
-            '*'
-        ]
-    matches = []
-    for passed_input, lookup_column in zip(passed_inputs, df_lookup.columns):
-        matches.append(
-            df_lookup[lookup_column].index.to_frame().isin(
-                wildcard_characters + [passed_input]
-            )
-        )
-    df_matches = pd.concat(matches, axis = 1)
-    try:
-        matched = df_matches.loc[df_matches.all(axis = 1)].index[0]
-    except IndexError:
-        matched = None
-    return matched
+# def get_idx(passed_inputs, df_lookup):
+#     wildcard_characters = [
+#             pd.Interval(-np.inf, np.inf, closed = 'both'),
+#             '*'
+#         ]
+#     matches = []
+#     for passed_input, lookup_column in zip(passed_inputs, df_lookup.columns):
+#         matches.append(
+#             df_lookup[lookup_column].index.to_frame().isin(
+#                 wildcard_characters + [passed_input]
+#             )
+#         )
+#     df_matches = pd.concat(matches, axis = 1)
+#     try:
+#         matched = df_matches.loc[df_matches.all(axis = 1)].index[0]
+#     except IndexError:
+#         matched = None
+#     return matched
     
 
 

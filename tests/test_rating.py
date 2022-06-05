@@ -4,18 +4,10 @@ import numpy as np
 import pytest
 from regex import R
 
+from pytest_lazyfixture import lazy_fixture
+
 from gzmo.rating.rating_plan import RatingTable
 
-# Fixtures
-# =====================================================================
-@pytest.fixture
-def test_input_simple():
-    df = pd.DataFrame({
-        'age': [1, 18, 25, 21, 10000],
-        'safe_driving': [True, True, False, False, 'missing'],
-        'credit_tier': ['B1', 'C1', 'D1', 'E1', 'X1']
-    })
-    return df
 
 
 # Simple call of the rating table with 1 or two sets of inputs
@@ -122,18 +114,65 @@ def test_input_simple():
 #     out = rating_table(inputs)
 #     assert np.allclose(out, expected_outputs, equal_nan = True)
 
+# @pytest.mark.parametrize(
+#     'inputs, expected_outputs',
+#     [
+#         ([['F1']], np.array([[2.0]])),
+#         ([['E1'], ['F1'], ['X1']], np.array([[1.8], [2.0], [2.0]]))
+#     ]
+#     )
+# def test_rating_table_str_wildcards_call(rating_table_simple, inputs, expected_outputs):
+#     rating_table = RatingTable(
+#         'test_table', rating_table_simple['rating_table_string_wildcard'])
+#     out = rating_table(inputs)
+#     assert np.allclose(out, expected_outputs, equal_nan = True)
+
 @pytest.mark.parametrize(
-    'inputs, expected_outputs',
+    'table_name, inputs, expected_outputs',
     [
-        ([['F1']], np.array([[2.0]])),
-        ([['E1'], ['F1'], ['X1']], np.array([[1.8], [2.0], [2.0]]))
+        # calling without keywords, without and with wildcard
+        ('rating_table_string', 'B1', {'factor': 1.2}),
+        ('rating_table_string', 'X1', {'factor': 2.0}),
+        # calling with a dict, without and with wildcard
+        ('rating_table_string', {'credit_tier': 'B1'}, {'factor': 1.2}),
+        ('rating_table_string', {'credit_tier': 'X1'}, {'factor': 2.0}),
+        # calling with a dataframe
+        ('rating_table_string', lazy_fixture('test_input_simple'),
+            pd.DataFrame({'factor': [1.4, 1.2, 1.6, 1.8, 2.0]})),
+        
+        # calling without keywords, without and with wildcard
+        ('rating_table_boolean', True, {'factor': 1.0}),
+        ('rating_table_boolean', False, {'factor': 3.0}),
+        # calling with a dict, without and with wildcard
+        ('rating_table_boolean', {'safe_driving': True}, {'factor': 1.0}),
+        ('rating_table_boolean', {'safe_driving': False}, {'factor': 3.0}),
+        # calling with a dataframe
+        ('rating_table_boolean', lazy_fixture('test_input_simple'),
+            pd.DataFrame({'factor': [1.0, 1.0, 3.0, 3.0, 3.0]})),
+        
+        # calling without keywords, without and with wildcard
+        ('rating_table_range', 18, {'factor': 1.8}),
+        ('rating_table_range', 32, {'factor': 2.4}),    # multiple matches
+        ('rating_table_range', 0, {'factor': 3}),
+        # calling with a dict, without and with wildcard
+        ('rating_table_range', {'age': 26}, {'factor': 2.2}),
+        ('rating_table_range', {'age': 16}, {'factor': 3.0}),
+        # calling with a dataframe
+        ('rating_table_range', lazy_fixture('test_input_simple'),
+            pd.DataFrame({'factor': [3.0, 1.8, 2.1, 1.9, 2.4]})),
+        
+        (
+            'rating_table_combo',
+            {'age': 18, 'safe_driving': False, 'credit_tier': 'C1'},
+            {'factor': 4.5}
+        ),
     ]
     )
-def test_rating_table_str_wildcards_call(rating_table_simple, inputs, expected_outputs):
+def test_evaluate(rating_table_simple, table_name, inputs, expected_outputs):
     rating_table = RatingTable(
-        'test_table', rating_table_simple['rating_table_string_wildcard'])
-    out = rating_table(inputs)
-    assert np.allclose(out, expected_outputs, equal_nan = True)
+        'test_table', rating_table_simple[table_name])
+    out = rating_table.evaluate(inputs)
+    assert np.all(out == expected_outputs)
 
 # @pytest.mark.parametrize(
 #     'inputs, expected_outputs',
