@@ -12,10 +12,18 @@ def rating_table_simple():
         )
     return df
 
-# Fixtures
-# =====================================================================
+# @pytest.fixture(scope = 'module')
+# def rating_inputs_simple():
+#     df = pd.read_excel(
+#         './tests/testdata/test_portfolio.xlsx',
+#         true_values = ['True'],
+#         false_values = ['False'],
+#         sheet_name = 'rating_inputs_simple'
+#         )
+#     return df
+
 @pytest.fixture(scope = 'module')
-def test_input_simple():
+def rating_inputs_simple():
     df = pd.DataFrame({
         'age': [1, 18, 25, 470, -1],
         'safe_driving': [True, True, None, False, 'missing'],

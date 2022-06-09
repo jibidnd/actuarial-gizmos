@@ -1,8 +1,6 @@
-from pickle import TRUE
 import pandas as pd
 import numpy as np
 import pytest
-from regex import R
 
 from pytest_lazyfixture import lazy_fixture
 
@@ -39,7 +37,7 @@ from gzmo.rating.rating_plan import RatingTable
         # calling with a dataframe
         (
             'rating_table_string',
-            lazy_fixture('test_input_simple'),
+            lazy_fixture('rating_inputs_simple'),
             pd.DataFrame({
                 'factor0': [1.4, 1.2, 1.6, 1.8, 2.0],
                 'factor1': [2.4, 2.2, 2.6, 2.8, 3.0]
@@ -73,7 +71,7 @@ from gzmo.rating.rating_plan import RatingTable
         # calling with a dataframe
         (
             'rating_table_boolean',
-            lazy_fixture('test_input_simple'),
+            lazy_fixture('rating_inputs_simple'),
             pd.DataFrame({
                 'factor0': [1.0, 1.0, 3.0, 3.0, 3.0],
                 'factor1': [2.0, 2.0, 4.0, 4.0, 4.0],
@@ -106,7 +104,7 @@ from gzmo.rating.rating_plan import RatingTable
         # calling with a dataframe
         (
             'rating_table_numeric',
-            lazy_fixture('test_input_simple'),
+            lazy_fixture('rating_inputs_simple'),
             pd.DataFrame({
                 'factor0': [3.0, 1.8, 2.5, 3.0, 3.0],
                 'factor1': [4.0, 2.8, 3.5, 4.0, 4.0]
@@ -141,7 +139,7 @@ from gzmo.rating.rating_plan import RatingTable
         # calling with a dataframe
         (
             'rating_table_range',
-            lazy_fixture('test_input_simple'),
+            lazy_fixture('rating_inputs_simple'),
             pd.DataFrame({
                 'factor0': [3.0, 1.8, 2.1, 2.4, 3],
                 'factor1': [4.0, 2.8, 3.1, 3.4, 4]
@@ -156,7 +154,7 @@ from gzmo.rating.rating_plan import RatingTable
         ),
         (
             'rating_table_combo',
-            lazy_fixture('test_input_simple'),
+            lazy_fixture('rating_inputs_simple'),
             pd.DataFrame({
                 'factor0': [100, 2.4, 100, 100, 100],
                 'factor1': [101, 3.4, 101, 101, 101]
@@ -168,6 +166,6 @@ from gzmo.rating.rating_plan import RatingTable
     )
 def test_evaluate(rating_table_simple, table_name, inputs, expected_outputs):
     rating_table = RatingTable(
-        'test_table', rating_table_simple[table_name])
+        rating_table_simple[table_name], 'test_table')
     out = rating_table.evaluate(inputs)
     assert np.all(out == expected_outputs)

@@ -132,8 +132,6 @@ class Info(dict):
                     if joined is None:
                         joined = item_to_join.to_frame()
                     else:
-                        print(joined)
-                        print(item_to_join)
                         joined = joined.join(item_to_join)
                     # Add processed indices to set
                     # processed_indices |= current_indices

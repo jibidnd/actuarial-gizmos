@@ -99,8 +99,8 @@ class RatingTable(pd.DataFrame, RatingStep):
 
     def __init__(
             self,
+            data: pd.Dataframe,
             name: str,
-            df: pd.Dataframe,
             version: str = None,
             effective_date: str = None,
             serff_filing_number: str = None,
@@ -126,7 +126,7 @@ class RatingTable(pd.DataFrame, RatingStep):
             additional_info (dict, optional): Any additional info to be
                 attached to the rating table. Defaults to None.
         """
-        super().__init__(data = df.copy(), **kwargs)
+        super().__init__(data = data.copy(), **kwargs)
         
         # information about the rating table
         self.name = name
@@ -151,14 +151,24 @@ class RatingTable(pd.DataFrame, RatingStep):
         self._wildcard_markers = pd.DataFrame(index = range(len(self)))
 
         # format the table
+        # Within self.prime(), when self.drop... is run,
+        # pandas' code actually invokes the the __init__ method,
+        # and runs self.prime() again.
+        # So the code actually gets run twice at initialization.
         self.prime()
+        
 
     # to retain subclasses through pandas data manipulations
     # https://pandas.pydata.org/docs/development/extending.html
-
+    # Also see https://github.com/pandas-dev/pandas/issues/19300
     @property
     def _constructor(self):
-        return RatingTable
+        return RatingTable._internal_ctor
+
+    @classmethod
+    def _internal_ctor(cls, *args, **kwargs):
+        kwargs['name'] = None
+        return cls(*args, **kwargs)
 
     def __call__(self, *args, **kwargs):
         return self.evaluate(*args, **kwargs)
@@ -171,7 +181,6 @@ class RatingTable(pd.DataFrame, RatingStep):
             we will use a MultiIndex regardless of how many inputs
             there are.
         """
-
         # first identify the inputs and outputs
         # Also take care of wildcards
         # All inputs start wtih "_"
@@ -214,6 +223,7 @@ class RatingTable(pd.DataFrame, RatingStep):
                 cleaned = c[:-1]
                 outputs.append(cleaned)
                 self.outputs.append(cleaned)
+        
         # Create new index
         # Note that interval ranges are assumed to be closed on both ends,
         #  consistent with how rating plans are usually built. 
@@ -234,39 +244,42 @@ class RatingTable(pd.DataFrame, RatingStep):
             else:
                 idx = pd.Index(self[f'_{c}'], name = c)
                 new_indices.append(idx)
-            # keep track of all possible input values
-            self.possible_input_values[c] = set(idx)
         
-        # create new dataframe
-        # Cannot use self.set_index here as that apparently
-        #   flattens the multiindex if it only has one level.
-        #   See source code for details.
-        #   I don't understand it that well.
-        self.index = pd.MultiIndex.from_arrays(new_indices)
-        # keep track of wildcard usage
-        wildcard_characters = [
-            pd.Interval(-np.inf, np.inf, closed = 'both'),
-            '*'
-        ]
+        # It is possible to have no indices to add
+        # i.e. when _constructor is called
+        if len(new_indices) > 0:
+            # create new dataframe
+            # Cannot use self.set_index here as that apparently
+            #   flattens the multiindex if it only has one level.
+            #   See source code for details.
+            #   I don't understand it that well.
+            self.index = pd.MultiIndex.from_arrays(new_indices)
+        
+        if len(outputs) > 0:
+            # rename the columns
+            self.rename(columns = {f'{c}_': c for c in outputs}, inplace = True)
+            # Is there a way to keep certain columns?
+            # We can't assign the result to another variable
+            self.drop(self.columns.difference(outputs), axis = 1, inplace = True)
+        
+        # keep track of which rows have widlcards
         self._wildcard_markers = self.index.to_frame() \
-                                    .isin(wildcard_characters).all(axis = 1)
-        # rename the columns
-        self.rename(columns = {f'{c}_': c for c in outputs}, inplace = True)
-        # Is there a way to keep certain columns?
-        # We can't assign the result to another variable
-        self.drop(self.columns.difference(outputs), axis = 1, inplace = True)
+                                            .isin(self.wildcard_characters) \
+                                            .any(axis = 1)
+
+
+    # TODO: use typing.overload for type hinting
 
     def evaluate(self, *args, **kwargs):
         # calls different methods based on input type.
         if args:
             if isinstance(args[0], dict):
                 return self._lookup(**args[0])
+            elif isinstance(args[0], pd.DataFrame):
+                inputs = args[0].get(self.inputs)
+                return self._eval_impl(inputs)
             else:
-                try:
-                    inputs = args[0].get(self.inputs)
-                    return self._eval_impl(inputs)
-                except:
-                    return self._lookup(*args)
+                return self._lookup(*args)
         elif kwargs:
             return self._lookup(**kwargs)
 
@@ -290,21 +303,19 @@ class RatingTable(pd.DataFrame, RatingStep):
             res = self._eval_match(
                 input_table, lookup_table = self)
             return res
-
-        # use self._eval_match to match on wildcard rows
-        lookup_table_wildcard = self.loc[self._wildcard_markers]
-        isna = res_nonwildcard.isna().all(axis = 1)
-        to_lookup = input_table.loc[isna]
-        res_wildcard = self._eval_match(
-            to_lookup, lookup_table = lookup_table_wildcard)
-        
-        # combine res_nonwildcard and res_wildcard
-        res = res_nonwildcard.fillna(res_wildcard)
-        # res = pd.concat([res_nonwildcard, res_wildcard], axis = 0, ignore_index = False)
-        # reorder to original index
-        res = res.loc[input_table.index]
-
-        return res
+        else:
+            # use self._eval_match to match on wildcard rows
+            lookup_table_wildcard = self.loc[self._wildcard_markers]
+            isna = res_nonwildcard.isna().all(axis = 1)
+            to_lookup = input_table.loc[isna]
+            res_wildcard = self._eval_match(
+                to_lookup, lookup_table = lookup_table_wildcard)
+            # combine res_nonwildcard and res_wildcard
+            res = res_nonwildcard.fillna(res_wildcard)
+            # res = pd.concat([res_nonwildcard, res_wildcard], axis = 0, ignore_index = False)
+            # reorder to original index
+            res = res.loc[input_table.index]
+            return res
         
 
     def _eval_reindex(self, input_table, lookup_table = None):
@@ -339,8 +350,9 @@ class RatingTable(pd.DataFrame, RatingStep):
         results = lookup_table.reindex(
             index = inputs, columns = self.outputs, copy = True)
         # use the inputs' index
-        results = results.set_index(passed_inputs.index)
-
+        # We also want to create a new dataframe, otherwise the resulting
+        # object would be a RatingTable instance.
+        results = pd.DataFrame(results, index = passed_inputs.index)
         return results
 
         # except ValueError as err:
