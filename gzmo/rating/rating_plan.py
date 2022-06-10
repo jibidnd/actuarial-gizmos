@@ -43,11 +43,11 @@ class RatingPlan:
         self.rating_steps[rating_step.name] = rating_step
         return
 
-    def rate(self, info: core.utils.Info):
+    def rate(self, book: core.Book):
         # each rating table is a rating step
         # and each operation is also a rating step
         for rating_step_name, rating_step in self.rating_steps.items():
-            rating_step.rate(info)
+            rating_step.rate(book)
         return
 
 class RatingStep(ABC):
@@ -59,9 +59,8 @@ class RatingStep(ABC):
     @abstractmethod
     def evaluate(self, *args, **kwargs):
         """Override this method to provide user-defined evaluation.
-        For most applications, this method should take `info`
-        as the only argument, and return a dataframe indexed by
-        identifying characteristics.
+
+        This should return a dataframe as the resulting factor/variable.
 
         Additional parameters (e.g. hard-coded values) can be added
         to the `RatingStep` instance itself as attributes.
@@ -70,10 +69,10 @@ class RatingStep(ABC):
 
     def rate(
         self,
-        info: core.utils.Info,
+        book: core.Book,
         results: rating.rating_results.RatingResults = None
         ):
-        result = self.evaluate(info)
+        result = self.evaluate(book)
         if results:
             results[self.name] = result
         return

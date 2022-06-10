@@ -1,6 +1,6 @@
 import pandas as pd
 
-class Info(dict):
+class Book(dict):
     """A dictionary-like class to allow access to multiple objects' properties
 
     While there is functionality to automatically set the indices,
@@ -70,7 +70,7 @@ class Info(dict):
                 if not v.index.is_unique:
                     raise Exception(f'DataFrame {k} has a non-unique index.')
 
-    def get(self, key, default = None, raise_ = False):
+    def get(self, key, default = None, how = 'left', raise_ = True):
         
         # searching for a single key should land here
         try:
@@ -119,8 +119,9 @@ class Info(dict):
             else:
                 return default
         else:
-            # Keep track of indices processed for join condition check
-            processed_indices = set()
+            # Keep track to preserve order of indices
+            # for some reason `pd.join` sometimes rearranges the indices
+            processed_indices = []
             for k in unique_keys:
                 if (item_to_join := self.get(k)) is None:
                     # Cannot get anything for this key.
@@ -132,9 +133,14 @@ class Info(dict):
                     if joined is None:
                         joined = item_to_join.to_frame()
                     else:
-                        joined = joined.join(item_to_join)
-                    # Add processed indices to set
-                    # processed_indices |= current_indices
+                        joined = joined.join(item_to_join, how = how)
+                    new_indices = [
+                        idx for idx in joined.index.names
+                        if idx not in processed_indices
+                        ]
+                    processed_indices += new_indices
+            
+            joined = joined.reorder_levels(processed_indices)
             
             return joined
     
