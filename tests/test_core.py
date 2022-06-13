@@ -5,24 +5,23 @@ import pytest
 from pytest_lazyfixture import lazy_fixture
 
 from gzmo import core
-from tests.conftest import portfolio_simple_indexed
 
 def test_fails_nonunique_index():
     # passing dataframes with non-unique indices should raise
     df_nonunique_idx = pd.DataFrame(
-        data = {'testdata': [1,2,3]},
+        data = {'testdata': [2,2,2]},
         index = [1,1,1]
     )
     # indices with no names are automatically dropped/reset
     df_nonunique_idx.index.name = 'idx'
     with pytest.raises(
         Exception,
-        match = f'DataFrame testdf has a non-unique index.'
+        match = f'Unable to set unique index for dataframe testdf'
         ):
         book = core.Book(testdf = df_nonunique_idx)
     
-def test_set_proper_index(portfolio_simple_indexed):
-    # this tests the Book.set_proper_index function
+def test_set_joinable_indices(portfolio_simple_indexed):
+    # this tests the Book.set_joinable_index function
     # any column that appears in another dataframe should be in the index
     # initialize the book
     book = core.Book(**portfolio_simple_indexed)
@@ -39,6 +38,32 @@ def test_set_proper_index(portfolio_simple_indexed):
     assert book['driver_claims'].index.names == \
         ['license_number', 'violation_date']
 
+@pytest.mark.parametrize(
+    'table_name, expected_index',
+    [
+        (
+            'policy_info',
+            ['policy_number']
+        ),
+        (
+            'driver_info',
+            ['policy_number', 'driver_number']
+        ),
+        (
+            'vehicle_info',
+            ['policy_number', 'vehicle_number']
+        ),
+        (
+            'driver_claims',
+            ['license_number', 'violation_date']
+        )
+    ]
+)
+def test_set_unique_index(portfolio_simple, table_name, expected_index):
+    # this tests the Book.set_unique_indices function
+    tempdf = portfolio_simple[table_name]
+    out_df = core.set_unique_index(tempdf, max_cols = 5)
+    assert out_df.index.names == expected_index
 
 def test_autojoin_left(portfolio_simple_indexed):
     book = core.Book(**portfolio_simple_indexed)

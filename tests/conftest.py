@@ -29,15 +29,20 @@ def portfolio_simple():
 
 @pytest.fixture(scope = 'module')
 def portfolio_simple_indexed(portfolio_simple):
-    portfolio_simple['policy_info'] \
-        .set_index(['policy_number'], inplace = True)
-    portfolio_simple['driver_info'] \
-        .set_index(['policy_number', 'driver_number'], inplace = True)
-    portfolio_simple['vehicle_info'] \
-        .set_index(['policy_number', 'vehicle_number'], inplace = True)
-    portfolio_simple['driver_claims'] \
-        .set_index(['license_number', 'violation_date'], inplace = True)
-    return portfolio_simple
+    ret = {}
+    ret['policy_info'] = \
+        portfolio_simple['policy_info'] \
+            .set_index(['policy_number'])
+    ret['driver_info'] = \
+        portfolio_simple['driver_info'] \
+        .set_index(['policy_number', 'driver_number'])
+    ret['vehicle_info'] = \
+        portfolio_simple['vehicle_info'] \
+        .set_index(['policy_number', 'vehicle_number'])
+    ret['driver_claims'] = \
+        portfolio_simple['driver_claims'] \
+        .set_index(['license_number', 'violation_date'])
+    return ret
 
 # @pytest.fixture(scope = 'module')
 # def rating_inputs_simple():

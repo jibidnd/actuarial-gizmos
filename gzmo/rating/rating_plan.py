@@ -265,6 +265,16 @@ class RatingTable(pd.DataFrame, RatingStep):
         self._wildcard_markers = self.index.to_frame() \
                                             .isin(self.wildcard_characters) \
                                             .any(axis = 1)
+                                            
+        # if there are no inputs, check that there is only 1 row
+        if self.inputs == []:
+            assert len(self) == 1, \
+                f'{self.name} has no inputs but has more than 1 row.'
+        
+        # check that there is at least 1 row
+        assert len(self) >= 1, \
+            f'{self.name} must contain at least 1 row.'
+
 
 
     # TODO: use typing.overload for type hinting
@@ -287,6 +297,22 @@ class RatingTable(pd.DataFrame, RatingStep):
         # first do _eval_reindex on non-wildcard rows of self for all rows in input_table
         # if fails, just fill in with None
         # then do eval_match on wildcard rows on any rows that do not yet have a value
+        
+        # if there are no inputs, simply do a cross join
+        if self.inputs == []:
+            assert len(self) == 1, \
+                f'{self.name} has no inputs but has more than 1 row.'
+            empty_dataframe = pd.DataFrame(index = input_table.index)
+            ret = empty_dataframe \
+                .assign(temp_join_key = 1) \
+                .merge(
+                    self.assign(temp_join_key = 1),
+                    on = 'temp_join_key',
+                    how = 'left'
+                    ) \
+                .drop('temp_join_key', axis = 1)
+            return ret
+
 
         # first use _eval_reindex on non-wildcard rows of self
         lookup_table_nonwildcard = self.loc[(~self._wildcard_markers).values]
@@ -400,15 +426,21 @@ class RatingTable(pd.DataFrame, RatingStep):
         Returns:
             dict: {input name: output value}
         """
+        
+        # Define the lookup table
+        if lookup_table is None:
+            lookup_table = self
+
+        # if there ar eno inputs, simply return the (first) row
+        if self.inputs == []:
+            return lookup_table.iloc[0].to_dict()
+
         # First convert non-keyword arguments to a dict
         if args:
             passed_inputs = {k: v for k, v in zip(self.inputs, args)}
         else:
             passed_inputs = {**kwargs}
-        
-        # Define the lookup table
-        if lookup_table is None:
-            lookup_table = self
+
 
         # Find out what rows match the given inputs
         matches = []

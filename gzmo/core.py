@@ -1,3 +1,5 @@
+import itertools
+import copy
 import pandas as pd
 
 class Book(dict):
@@ -16,9 +18,9 @@ class Book(dict):
     manually index the dataframe with uniquely identifying rows.
     """    
     def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.set_proper_index()
-        self.check_indices_unique()
+        super().__init__(copy.deepcopy(kwargs))
+        self.set_joinable_indices()
+        self.set_unique_indices()
     
     def __getattr__(self, name: str):
         if (ret := self.get(name) is not None):
@@ -29,10 +31,10 @@ class Book(dict):
     def register(self, **kwargs):
         # updates and checks index relationships
         super().update(kwargs)
-        self.ensure_index_joinable()
+        self.set_joinable_index()
         self.check_indices_unique()
 
-    def set_proper_index(self):
+    def set_joinable_indices(self):
         # this is to check that if a column is used as an index
         # in any dataframe, it is used as an index everywhere else.
         # This is such that joining can be done efficiently.
@@ -64,11 +66,19 @@ class Book(dict):
                     [i for i, name in enumerate(v.index.names) if name is None]
                 v.reset_index(level = lvls_to_drop, drop = True, inplace = True)
 
-    def check_indices_unique(self):
+    def set_unique_indices(self, max_cols = 5):
+        # for each data frame
+        #   if dataframe has non-unique index
+        #       test all combinations up to `max_cols`
+        #       to see if we can create a unique index
         for k, v in self.items():
             if isinstance(v, pd.DataFrame):
                 if not v.index.is_unique:
-                    raise Exception(f'DataFrame {k} has a non-unique index.')
+                    try:
+                        self[k] = set_unique_index(v, max_cols)
+                    except Exception as err:
+                        msg = f'Unable to set unique index for dataframe {k}'
+                        raise Exception(msg) from err
 
     def get(self, key, default = None, how = 'left', raise_ = True):
         
@@ -143,4 +153,32 @@ class Book(dict):
             joined = joined.reorder_levels(processed_indices)
             
             return joined
+
+def set_unique_index(df, max_cols):
+    if (df.index.is_unique) & \
+        (df.index.names != [None]):
+        return df
     
+    for num_cols in range(1, max_cols + 1):
+        for addl_idx_size in range(1, num_cols + 1):
+            lst_cols = df.columns[:num_cols]
+            if len(lst_cols) == 0:
+                raise Exception('Too few columns to find unique index.')
+            sample_idxs = \
+                itertools.combinations(lst_cols, addl_idx_size)
+            for sample_idx in sample_idxs:
+                lvls_to_ignore = \
+                    [
+                        i for
+                        i, name in enumerate(df.index.names)
+                        if name is None
+                    ]
+                test_idx = \
+                    df.set_index(list(sample_idx), append = True) \
+                        .reset_index(level = lvls_to_ignore) \
+                        .index
+                if test_idx.is_unique:
+                    df.set_index(test_idx, inplace = True)
+                    return df
+    msg = f'Unable to find unique index among columns {",".join(lst_cols)}'
+    raise Exception(msg)
