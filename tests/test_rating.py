@@ -165,7 +165,7 @@ from gzmo.rating.rating_plan import RatingTable
     ]
 )
 def test_evaluate(rating_table_simple, table_name, inputs, expected_outputs):
-    rating_table = RatingTable(
+    rating_table = RatingTable.from_unprocessed_table(
         rating_table_simple[table_name], 'test_table')
     out = rating_table.evaluate(inputs)
     assert np.all(out == expected_outputs)

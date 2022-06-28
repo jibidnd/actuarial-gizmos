@@ -6,10 +6,12 @@ from typing import Union
 
 import pandas as pd
 import numpy as np
+from py import process
 from sklearn import utils
 
 from gzmo import core
 from gzmo import rating
+from gzmo.rating import helpers
 
 
 class RatingPlan:
@@ -100,6 +102,9 @@ class RatingTable(pd.DataFrame, RatingStep):
             self,
             data: pd.Dataframe,
             name: str,
+            inputs: list,
+            outputs: list,
+            wildcard_characters = None,
             version: str = None,
             effective_date: str = None,
             serff_filing_number: str = None,
@@ -129,6 +134,11 @@ class RatingTable(pd.DataFrame, RatingStep):
         
         # information about the rating table
         self.name = name
+        self.inputs = inputs
+        self.outputs = outputs
+        self.wildcard_characters = \
+            wildcard_characters or \
+            ['*', pd.Interval(-np.inf, np.inf, closed = 'both')]
         self.version = version
         self.effective_date = effective_date
         self.serff_filing_number = serff_filing_number
@@ -137,24 +147,15 @@ class RatingTable(pd.DataFrame, RatingStep):
         # any additional information to attach to the table
         self.additional_info = additional_info or {}
 
-        # input and output columns
-        self.inputs = []
-        self.outputs = []
-        self.wildcard_characters = [
-            '*',
-            pd.Interval(-np.inf, np.inf, closed = 'both')
-            ]
 
         # Keep a marker of whether a row has any wildcards
         # For intervals, (-inf, inf) or (*, *) are treated as wildcards
-        self._wildcard_markers = pd.DataFrame(index = range(len(self)))
+        self._wildcard_markers = helpers.get_wildcard_markers(
+            self.index.to_frame(),
+            self.wildcard_characters
+            )
 
-        # format the table
-        # Within self.prime(), when self.drop... is run,
-        # pandas' code actually invokes the the __init__ method,
-        # and runs self.prime() again.
-        # So the code actually gets run twice at initialization.
-        self.prime()
+        return        
         
 
     # to retain subclasses through pandas data manipulations
@@ -167,115 +168,18 @@ class RatingTable(pd.DataFrame, RatingStep):
     @classmethod
     def _internal_ctor(cls, *args, **kwargs):
         kwargs['name'] = None
+        kwargs['inputs'] = None
+        kwargs['outputs'] = None
         return cls(*args, **kwargs)
 
     def __call__(self, *args, **kwargs):
         return self.evaluate(*args, **kwargs)
 
-    def prime(self):
-        """Formats the inputs and outputs given rating plan information.
-
-        This creates a pd.MultiIndex for the dataframe. A MultiIndex
-            allows using multiple inputs. To keep things consistent,
-            we will use a MultiIndex regardless of how many inputs
-            there are.
-        """
-        # first identify the inputs and outputs
-        # Also take care of wildcards
-        # All inputs start wtih "_"
-        # interval inputs start with "_" and have two columns ending
-        #   with "_left" and "_right"
-        # outputs end with "_"
-        # We'd like to preserve order so looping is the easiest
-        interval_inputs = []
-        other_inputs = []
-        outputs = []
-        for c in self.columns:
-            if c.startswith('_'):
-                # Ranges
-                # note that a single wildcard in one but not both ends of a range
-                # are not considered true "wildcard" uses.
-                # see treatment of double_wildcard and single_wildcard
-                # below for more information
-                if c.endswith('_left'):
-                    cleaned = c[1:].replace('_left', '').replace('_right', '')
-                    # Add to list of inputs
-                    interval_inputs.append(cleaned)
-                    self.inputs.append(cleaned)
-                    # Convert wildcards to -inf and
-                    # cast to float for performance
-                    self[c] = self[c].replace('*', -np.inf).astype(float)
-                elif c.endswith('_right'):
-                    # _right columns don't need to be added to input list
-                    self[c] = self[c].replace('*', np.inf).astype(float)
-                # Other inputs
-                else:
-                    # add to input list
-                    cleaned = c[1:]
-                    other_inputs.append(cleaned)
-                    self.inputs.append(cleaned)
-                    # Make a note of wildcard usage, if any
-                    if (self[c]=='*').any():
-                        self._has_wildcards = True
-            elif c.endswith('_'):
-                # add outputs to the list of outputs
-                cleaned = c[:-1]
-                outputs.append(cleaned)
-                self.outputs.append(cleaned)
-        
-        # Create new index
-        # Note that interval ranges are assumed to be closed on both ends,
-        #  consistent with how rating plans are usually built. 
-        new_indices = []
-        for c in self.inputs:
-            if c in interval_inputs:
-                # Check that if interval, both _left and _right are defined
-                assert ((f'_{c}_left' in self.columns)
-                        and (f'_{c}_right' in self.columns)), \
-                    f'Missing column for interval input {c}'
-                # create pandas interval index
-                idx = pd.IntervalIndex.from_arrays(
-                    self[f'_{c}_left'], self[f'_{c}_right'],
-                    closed = 'both',
-                    name=c
-                )
-                new_indices.append(idx)
-            else:
-                idx = pd.Index(self[f'_{c}'], name = c)
-                new_indices.append(idx)
-        
-        # It is possible to have no indices to add
-        # i.e. when _constructor is called
-        if len(new_indices) > 0:
-            # create new dataframe
-            # Cannot use self.set_index here as that apparently
-            #   flattens the multiindex if it only has one level.
-            #   See source code for details.
-            #   I don't understand it that well.
-            self.index = pd.MultiIndex.from_arrays(new_indices)
-        
-        if len(outputs) > 0:
-            # rename the columns
-            self.rename(columns = {f'{c}_': c for c in outputs}, inplace = True)
-            # Is there a way to keep certain columns?
-            # We can't assign the result to another variable
-            self.drop(self.columns.difference(outputs), axis = 1, inplace = True)
-        
-        # keep track of which rows have widlcards
-        self._wildcard_markers = self.index.to_frame() \
-                                            .isin(self.wildcard_characters) \
-                                            .any(axis = 1)
-                                            
-        # if there are no inputs, check that there is only 1 row
-        if self.inputs == []:
-            assert len(self) == 1, \
-                f'{self.name} has no inputs but has more than 1 row.'
-        
-        # check that there is at least 1 row
-        assert len(self) >= 1, \
-            f'{self.name} must contain at least 1 row.'
-
-
+    @classmethod
+    def from_unprocessed_table(cls, df, name, **kwargs):
+        processed_rating_table, inputs, outputs = \
+            helpers.process_rating_table(df)
+        return cls(processed_rating_table, name, inputs, outputs, **kwargs)
 
     # TODO: use typing.overload for type hinting
 
