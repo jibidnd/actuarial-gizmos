@@ -4,7 +4,7 @@ import pytest
 
 from pytest_lazyfixture import lazy_fixture
 
-from gzmo.rating.rating_plan import RatingTable
+from gzmo.rating.rating_plan import BaseRatingTable, InterpolatedRatingTabe, LookupRatingTable
 
 
 @pytest.mark.parametrize(
@@ -164,8 +164,71 @@ from gzmo.rating.rating_plan import RatingTable
 
     ]
 )
-def test_evaluate(rating_table_simple, table_name, inputs, expected_outputs):
-    rating_table = RatingTable.from_unprocessed_table(
+def test_lookup(rating_table_simple, table_name, inputs, expected_outputs):
+    rating_table = LookupRatingTable.from_unprocessed_table(
         rating_table_simple[table_name], 'test_table')
     out = rating_table.evaluate(inputs)
     assert np.all(out == expected_outputs)
+
+@pytest.mark.parametrize(
+    'inputs, expected_outputs',
+    [
+
+        # calling without keywords
+        (
+            # below range
+            17,
+            {'factor0': 1.7, 'factor1': 2.7}),
+        (
+            # within range; decimal
+            18.5,
+            {'factor0': 1.85, 'factor1': 2.85}),
+        (
+            # within range; differnet slope of interpolation
+            20.5,
+            {'factor0': 2.5, 'factor1': 3.5}),
+        (
+            # above range
+            22,
+            {'factor0': 4.0, 'factor1': 5.0}),
+        # calling with a dict
+        (
+            # below range
+            {'age': 17},
+            {'factor0': 1.7, 'factor1': 2.7}),
+        (
+            # within range; decimal
+            {'age': 18.5},
+            {'factor0': 1.85, 'factor1': 2.85}),
+        (
+            # within range; differnet slope of interpolation
+            {'age': 20.5},
+            {'factor0': 2.5, 'factor1': 3.5}),
+        (
+            # above range
+            {'age': 22},
+            {'factor0': 4.0, 'factor1': 5.0}),
+        # calling with a dataframe
+        (
+            lazy_fixture('rating_inputs_simple'),
+            pd.DataFrame({
+                'factor0': [0.1, 1.8, 7.0, 452, -0.1],
+                'factor1': [1.1, 2.8, 8.0, 453, 0.9]
+                })
+        ),
+    ]
+)
+def test_interpolate(rating_table_simple, inputs, expected_outputs):
+    rating_table = BaseRatingTable.from_unprocessed_table(
+        rating_table_simple['rating_table_interpolated'], 'test_table')
+    interpolated_rating_table = InterpolatedRatingTabe(rating_table)
+    out = interpolated_rating_table.evaluate(inputs)
+    if isinstance(expected_outputs, dict):
+        for k, v in expected_outputs.items():
+            assert np.isclose(out[k], v)
+    elif isinstance(expected_outputs, pd.DataFrame):
+        print(out)
+        print(expected_outputs)
+        assert np.allclose(out, expected_outputs)
+    else:
+        raise TypeError

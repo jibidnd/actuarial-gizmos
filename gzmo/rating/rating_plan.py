@@ -58,29 +58,8 @@ class RatingStep(ABC):
         super().__init__()
         self.name = name
     
-    @abstractmethod
-    def evaluate(self, *args, **kwargs):
-        """Override this method to provide user-defined evaluation.
 
-        This should return a dataframe as the resulting factor/variable.
-
-        Additional parameters (e.g. hard-coded values) can be added
-        to the `RatingStep` instance itself as attributes.
-        """
-        pass
-
-    def rate(
-        self,
-        book: core.Book,
-        results: rating.rating_results.RatingResults = None
-        ):
-        result = self.evaluate(book)
-        if results:
-            results[self.name] = result
-        return
-
-
-class RatingTable(pd.DataFrame, RatingStep):
+class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
 
     # _metadata define properties that will be passed to manipulation results.
     # https://pandas.pydata.org/docs/development/extending.html
@@ -163,7 +142,7 @@ class RatingTable(pd.DataFrame, RatingStep):
     # Also see https://github.com/pandas-dev/pandas/issues/19300
     @property
     def _constructor(self):
-        return RatingTable._internal_ctor
+        return BaseRatingTable._internal_ctor
 
     @classmethod
     def _internal_ctor(cls, *args, **kwargs):
@@ -174,29 +153,40 @@ class RatingTable(pd.DataFrame, RatingStep):
 
     def __call__(self, *args, **kwargs):
         return self.evaluate(*args, **kwargs)
-
+    
+    # TODO: use typing.overload for type hinting
+    def evaluate(self, *args, **kwargs):
+        # calls different methods based on input type.
+        if args:
+            if isinstance(args[0], dict):
+                return self._eval_single(**args[0])
+            elif isinstance(args[0], pd.DataFrame):
+                inputs = args[0].get(self.inputs)
+                return self._eval_table(inputs)
+            else:
+                return self._eval_single(*args)
+        elif kwargs:
+            return self._eval_single(**kwargs)
+    
+    def _eval_table(self, input_table):
+        lst_dictoutputs = input_table.apply(self._eval_single, axis = 1).tolist()
+        return pd.DataFrame.from_records(lst_dictoutputs)
+    
+    #TODO: why doesn't this work?
+    # @abstractmethod
+    def _eval_single(self, *args, **kwargs):
+        pass
+    
     @classmethod
     def from_unprocessed_table(cls, df, name, **kwargs):
         processed_rating_table, inputs, outputs = \
             helpers.process_rating_table(df)
         return cls(processed_rating_table, name, inputs, outputs, **kwargs)
 
-    # TODO: use typing.overload for type hinting
+class LookupRatingTable(BaseRatingTable):
 
-    def evaluate(self, *args, **kwargs):
-        # calls different methods based on input type.
-        if args:
-            if isinstance(args[0], dict):
-                return self._lookup(**args[0])
-            elif isinstance(args[0], pd.DataFrame):
-                inputs = args[0].get(self.inputs)
-                return self._eval_impl(inputs)
-            else:
-                return self._lookup(*args)
-        elif kwargs:
-            return self._lookup(**kwargs)
 
-    def _eval_impl(self, input_table):
+    def _eval_table(self, input_table):
         # The function to handle dataframe inputs
         # first do _eval_reindex on non-wildcard rows of self for all rows in input_table
         # if fails, just fill in with None
@@ -284,10 +274,6 @@ class RatingTable(pd.DataFrame, RatingStep):
         results = pd.DataFrame(results, index = passed_inputs.index)
         return results
 
-        # except ValueError as err:
-        #     if str(err) == 'setting an array element with a sequence.':
-        #         raise Exception('')
-
     def _eval_match(self, input_table, lookup_table = None):
         """Uses self._lookup to look up rows that match 
             each row of inputs in input_table.
@@ -305,7 +291,7 @@ class RatingTable(pd.DataFrame, RatingStep):
         if lookup_table is None:
             lookup_table = self
         records = input_table.apply(
-            lambda row: self._lookup(
+            lambda row: self._eval_single(
                 lookup_table = lookup_table, **row.to_dict()
                 ),
             axis = 1
@@ -315,7 +301,7 @@ class RatingTable(pd.DataFrame, RatingStep):
         
         return result
 
-    def _lookup(self, *args, lookup_table = None, **kwargs):
+    def _eval_single(self, *args, lookup_table = None, **kwargs):
         """Function to handle a single (set of) input.
         Pass one set of inputs to retrieve a mathching row as a dict.
 
@@ -365,3 +351,64 @@ class RatingTable(pd.DataFrame, RatingStep):
             return {k: None for k in self.inputs}
         else:
             return matching_rows.iloc[0].to_dict()
+
+class InterpolatedRatingTabe(BaseRatingTable):
+
+    def __init__(self, rating_table):
+        self.__dict__.update(rating_table.__dict__)
+        assert (len(self.inputs) == 1) and (len(self.index.names) == 1), \
+            'Only tables with 1 input can be interpolated.'
+        assert not self._wildcard_markers.any(), \
+            'Tables with wildcard markers cannot be interpolated.'
+        self.index = pd.Index(self.index.get_level_values(0))
+
+    def make_lookup_table(self, passed_inputs):
+        input_set = set(passed_inputs) | set(self.index)        
+        expanded_table = self.reindex(list(input_set))
+        expanded_table = expanded_table.sort_index()
+        
+        # interpolate
+        kw = dict(method='from_derivatives', order = 1, extrapolate = True, fill_value="extrapolate", limit_direction="both")
+        # kw = dict(method="spline", order = 1, fill_value="extrapolate", limit_direction="both")
+        lookup_table = expanded_table.interpolate(**kw)
+
+        return lookup_table
+
+    def _eval_table(self, input_table):
+
+        # reorder input columns
+        passed_inputs = input_table.loc[:, self.inputs]
+
+        #  Define the lookup table
+        lookup_table = \
+            self.make_lookup_table(set(passed_inputs.values.reshape(-1)))
+        print(lookup_table)
+        # perform the lookup
+        # inputs = passed_inputs.to_records(index = False).tolist()
+        inputs = passed_inputs.values.reshape(-1)
+        print(inputs)
+        results = lookup_table.reindex(
+            index = inputs, columns = self.outputs, copy = True)
+        print(results)
+        # use the inputs' index
+        # We also want to create a new dataframe, otherwise the resulting
+        # object would be a RatingTable instance.
+        results = pd.DataFrame(results,)
+        results.index = passed_inputs.index
+
+        return results
+    
+    def _eval_single(self, *args, **kwargs):
+        
+        # First convert non-keyword arguments to a dict
+        if args:
+            assert len(args) == 1, 'Too many inputs for an interpolated table.'
+            passed_input = args[0]
+        else:
+            passed_input = kwargs[self.inputs[0]]
+        
+        #  Define the lookup table
+        lookup_table = self.make_lookup_table([passed_input])
+        print(lookup_table)
+
+        return lookup_table.loc[passed_input, self.outputs].to_dict()
