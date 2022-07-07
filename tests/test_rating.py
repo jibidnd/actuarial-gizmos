@@ -4,7 +4,7 @@ import pytest
 
 from pytest_lazyfixture import lazy_fixture
 
-from gzmo.rating.rating_plan import BaseRatingTable, InterpolatedRatingTabe, LookupRatingTable
+from gzmo.rating.rating_plan import BaseRatingTable, InterpolatedRatingTable, LookupRatingTable
 
 
 @pytest.mark.parametrize(
@@ -219,16 +219,16 @@ def test_lookup(rating_table_simple, table_name, inputs, expected_outputs):
     ]
 )
 def test_interpolate(rating_table_simple, inputs, expected_outputs):
-    rating_table = BaseRatingTable.from_unprocessed_table(
+    # rating_table = BaseRatingTable.from_unprocessed_table(
+    #     rating_table_simple['rating_table_interpolated'], 'test_table')
+    # interpolated_rating_table = InterpolatedRatingTable(rating_table)
+    interpolated_rating_table = InterpolatedRatingTable.from_unprocessed_table(
         rating_table_simple['rating_table_interpolated'], 'test_table')
-    interpolated_rating_table = InterpolatedRatingTabe(rating_table)
     out = interpolated_rating_table.evaluate(inputs)
     if isinstance(expected_outputs, dict):
         for k, v in expected_outputs.items():
             assert np.isclose(out[k], v)
     elif isinstance(expected_outputs, pd.DataFrame):
-        print(out)
-        print(expected_outputs)
         assert np.allclose(out, expected_outputs)
     else:
         raise TypeError

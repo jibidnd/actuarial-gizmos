@@ -2,7 +2,9 @@ import itertools
 import copy
 import pandas as pd
 
-class Book(dict):
+from gzmo.base import FancyDict
+
+class Book(FancyDict):
     """A dictionary-like class to allow access to multiple objects' properties
 
     While there is functionality to automatically set the indices,
@@ -18,12 +20,12 @@ class Book(dict):
     manually index the dataframe with uniquely identifying rows.
     """    
     def __init__(self, **kwargs):
-        super().__init__(copy.deepcopy(kwargs))
-        self.set_joinable_indices()
+        super().__init__(**copy.deepcopy(kwargs))
         self.set_unique_indices()
+        self.set_joinable_indices()
     
     def __getattr__(self, name: str):
-        if (ret := self.get(name) is not None):
+        if (ret := self.get(name)) is not None:
             return ret
         else:
             raise AttributeError(f'Cannot find {name} in info.')
@@ -59,7 +61,11 @@ class Book(dict):
         lst_idx = [name for name, count in all_names.items() if count > 1]
         for v in self.values():
             if isinstance(v, pd.DataFrame):
-                add_to_idx = [c for c in v.columns if c in lst_idx]
+                add_to_idx = [
+                    c for c in v.columns
+                    if c in lst_idx
+                    if c not in v.index.names
+                    ]
                 v.set_index(add_to_idx, append = True, inplace = True)
                 # drop an index if it doesn't have a name
                 lvls_to_drop = \
@@ -73,12 +79,14 @@ class Book(dict):
         #       to see if we can create a unique index
         for k, v in self.items():
             if isinstance(v, pd.DataFrame):
-                if not v.index.is_unique:
+                if not ((v.index.is_unique) & (v.index.names != [None])):
                     try:
                         self[k] = set_unique_index(v, max_cols)
                     except Exception as err:
                         msg = f'Unable to set unique index for dataframe {k}'
                         raise Exception(msg) from err
+                    except:
+                        raise
 
     def get(self, key, default = None, how = 'left', raise_ = True):
         
@@ -132,6 +140,12 @@ class Book(dict):
             # Keep track to preserve order of indices
             # for some reason `pd.join` sometimes rearranges the indices
             processed_indices = []
+
+            # If nothing is requested, simply return the indices
+            # of the first dataframe
+            if len(unique_keys) == 0:
+                return next(iter(self.values())).get([])
+
             for k in unique_keys:
                 if (item_to_join := self.get(k)) is None:
                     # Cannot get anything for this key.
@@ -149,8 +163,9 @@ class Book(dict):
                         if idx not in processed_indices
                         ]
                     processed_indices += new_indices
-            
-            joined = joined.reorder_levels(processed_indices)
+            # reorder if there are more than 1 column returned
+            if len(processed_indices) > 1:
+                joined = joined.reorder_levels(processed_indices)
             
             return joined
 
@@ -158,7 +173,7 @@ def set_unique_index(df, max_cols):
     if (df.index.is_unique) & \
         (df.index.names != [None]):
         return df
-    
+
     for num_cols in range(1, max_cols + 1):
         for addl_idx_size in range(1, num_cols + 1):
             lst_cols = df.columns[:num_cols]

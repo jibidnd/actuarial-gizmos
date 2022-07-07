@@ -1,28 +1,24 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from cgitb import lookup
-from typing import Union
+from abc import ABC
 
 import pandas as pd
 import numpy as np
-from py import process
-from sklearn import utils
 
 from gzmo import core
 from gzmo import rating
+from gzmo.base import FancyDict
 from gzmo.rating import helpers
 
 
-class RatingPlan:
+class RatingPlan(FancyDict):
     """This class handles the initialization of a rating plan."""
 
     def __init__(self, name: str) -> None:
-        
         self.name = name
-        self.rating_tables = {}
-    
-    def read_excel(self, io: str, *args, **kwargs) -> None:
+
+    @classmethod
+    def from_excel(cls, name: str, io: str, *args, **kwargs) -> None:
         """A wrapper of panda's read_excel function that
             - reads and prepare rating tables from the excel file
             - adds the tables to the rating plan.
@@ -30,33 +26,48 @@ class RatingPlan:
         Args:
             See pandas.read_excel documentation for details.
         """
-        excel_file = pd.read_excel(io, *args, **kwargs)
+        # initialize rating plan
+        rating_plan = cls(name)
+        # read excel tables
+        excel_file = pd.read_excel(io, sheet_name = None, *args, **kwargs)
         for table_name, table in excel_file.items():
-            rating_table = RatingTable(table_name, table)
-            self.add_rating_table(table_name, table)
-        return
+            rating_table = LookupRatingTable.from_unprocessed_table(table, table_name)
+            rating_plan.register(**{table_name: rating_table})
+        return rating_plan
 
-    def add_rating_table(self, name: str, rating_table: RatingTable) -> None:  
-        self.rating_tables[name]= rating_table
-        self.add_rating_step(name, rating_table)
-        return
-    
-    def add_rating_step(self, rating_step: RatingStep) -> None:
-        self.rating_steps[rating_step.name] = rating_step
-        return
+    def read_excel(self, io: str, *args, **kwargs):
+        # read excel tables
+        excel_file = pd.read_excel(io, sheet_name = None, *args, **kwargs)
+        for table_name, table in excel_file.items():
+            rating_table = LookupRatingTable.from_unprocessed_table(table, table_name)
+            self.register(**{table_name: rating_table})
+        return self
 
     def rate(self, book: core.Book):
+
+        # Initialize FancyDict to store results
+        session = FancyDict()
+        rating_results = FancyDict()
+        # we want to search the rating results first
+        # so we register that first
+        session.register(**{
+            'rating_results': rating_results,
+            'book': book
+        })
+        
         # each rating table is a rating step
         # and each operation is also a rating step
-        for rating_step_name, rating_step in self.rating_steps.items():
-            rating_step.rate(book)
-        return
+        for rating_step_name, rating_step in self.items():
+            print(rating_step_name)
+            rating_result = rating_step(session)
+            rating_results.register(**{rating_step_name: rating_result})
+        
+        return session
 
 class RatingStep(ABC):
 
     def __init__(self, name) -> None:
         super().__init__()
-        self.name = name
     
 
 class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
@@ -76,6 +87,10 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
         'wildcard_characters',
         '_wildcard_markers'
     ]
+
+    # defaults
+    default_wildcard_characters = \
+        ['*', pd.Interval(-np.inf, np.inf, closed = 'both')]
 
     def __init__(
             self,
@@ -116,8 +131,7 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
         self.inputs = inputs
         self.outputs = outputs
         self.wildcard_characters = \
-            wildcard_characters or \
-            ['*', pd.Interval(-np.inf, np.inf, closed = 'both')]
+            wildcard_characters or BaseRatingTable.default_wildcard_characters
         self.version = version
         self.effective_date = effective_date
         self.serff_filing_number = serff_filing_number
@@ -134,35 +148,44 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
             self.wildcard_characters
             )
 
+        self._check_requirements()
+
         return        
         
 
-    # to retain subclasses through pandas data manipulations
-    # https://pandas.pydata.org/docs/development/extending.html
-    # Also see https://github.com/pandas-dev/pandas/issues/19300
-    @property
-    def _constructor(self):
-        return BaseRatingTable._internal_ctor
+    # # to retain subclasses through pandas data manipulations
+    # # https://pandas.pydata.org/docs/development/extending.html
+    # # Also see https://github.com/pandas-dev/pandas/issues/19300
+    # @property
+    # def _constructor(self):
+    #     return BaseRatingTable._internal_ctor
 
-    @classmethod
-    def _internal_ctor(cls, *args, **kwargs):
-        kwargs['name'] = None
-        kwargs['inputs'] = None
-        kwargs['outputs'] = None
-        return cls(*args, **kwargs)
+    # @classmethod
+    # def _internal_ctor(cls, *args, **kwargs):
+    #     kwargs['name'] = None
+    #     kwargs['inputs'] = None
+    #     kwargs['outputs'] = None
+    #     return cls(*args, **kwargs)
 
     def __call__(self, *args, **kwargs):
         return self.evaluate(*args, **kwargs)
-    
+
+    def _check_requirements(self):
+        missing_outputs = set(self.outputs) - set(self.columns)
+        assert (missing_outputs == set()), \
+            f'Some outputs do not have a column: {missing_outputs}'
+
     # TODO: use typing.overload for type hinting
     def evaluate(self, *args, **kwargs):
         # calls different methods based on input type.
         if args:
-            if isinstance(args[0], dict):
+            if isinstance(args[0], (pd.DataFrame, FancyDict)):
+                if (inputs := args[0].get(self.inputs)) is None:
+                    raise RuntimeError(f'Unable to get inputs for {self.name}')
+                else:
+                    return self._eval_table(inputs)
+            elif isinstance(args[0], dict):
                 return self._eval_single(**args[0])
-            elif isinstance(args[0], pd.DataFrame):
-                inputs = args[0].get(self.inputs)
-                return self._eval_table(inputs)
             else:
                 return self._eval_single(*args)
         elif kwargs:
@@ -197,14 +220,21 @@ class LookupRatingTable(BaseRatingTable):
             assert len(self) == 1, \
                 f'{self.name} has no inputs but has more than 1 row.'
             empty_dataframe = pd.DataFrame(index = input_table.index)
+            # ret = empty_dataframe \
+            #     .assign(temp_join_key = 1) \
+            #     .merge(
+            #         self.assign(temp_join_key = 1),
+            #         on = 'temp_join_key',
+            #         how = 'left'
+            #         ) \
+            #     .drop('temp_join_key', axis = 1)
             ret = empty_dataframe \
-                .assign(temp_join_key = 1) \
                 .merge(
-                    self.assign(temp_join_key = 1),
-                    on = 'temp_join_key',
-                    how = 'left'
-                    ) \
-                .drop('temp_join_key', axis = 1)
+                    self,
+                    how = 'cross'
+                    )
+            # pandas merge does not preserve index on cross joins
+            ret.index = input_table.index
             return ret
 
 
@@ -352,18 +382,38 @@ class LookupRatingTable(BaseRatingTable):
         else:
             return matching_rows.iloc[0].to_dict()
 
-class InterpolatedRatingTabe(BaseRatingTable):
-
-    def __init__(self, rating_table):
-        self.__dict__.update(rating_table.__dict__)
-        assert (len(self.inputs) == 1) and (len(self.index.names) == 1), \
-            'Only tables with 1 input can be interpolated.'
-        assert not self._wildcard_markers.any(), \
-            'Tables with wildcard markers cannot be interpolated.'
+class InterpolatedRatingTable(BaseRatingTable):
+    
+    def __init__(self, data, name, inputs, outputs, **kwargs) -> None:
+        super().__init__(data, name, inputs, outputs, **kwargs)
+        # flatten multiindex to single level index for interpolation
+        # __init__ will have called _check_requirements,
+        #   which makes sure there is only 1 level of index
         self.index = pd.Index(self.index.get_level_values(0))
 
+    @classmethod
+    def from_rating_table(cls, rating_table, **kwargs):
+        # initialize a new instance
+        name = rating_table.name
+        inputs = rating_table.inputs
+        outputs = rating_table.outputs
+        rating_table.index = pd.Index(rating_table.index.get_level_values(0))
+        ret = cls(rating_table, name, inputs, outputs)
+        # inherit other attributes
+        ret.__dict__.update(rating_table.__dict__)
+        return ret
+
+    def _check_requirements(self):
+       
+        super()._check_requirements()
+
+        assert not self._wildcard_markers.any(), \
+            'Tables with wildcard markers cannot be interpolated.'
+        assert (len(self.inputs) == 1) and (len(self.index.names) == 1), \
+            'Only tables with 1 input can be interpolated.'
+
     def make_lookup_table(self, passed_inputs):
-        input_set = set(passed_inputs) | set(self.index)        
+        input_set = set(passed_inputs) | set(self.index)
         expanded_table = self.reindex(list(input_set))
         expanded_table = expanded_table.sort_index()
         
@@ -382,18 +432,15 @@ class InterpolatedRatingTabe(BaseRatingTable):
         #  Define the lookup table
         lookup_table = \
             self.make_lookup_table(set(passed_inputs.values.reshape(-1)))
-        print(lookup_table)
         # perform the lookup
         # inputs = passed_inputs.to_records(index = False).tolist()
         inputs = passed_inputs.values.reshape(-1)
-        print(inputs)
         results = lookup_table.reindex(
             index = inputs, columns = self.outputs, copy = True)
-        print(results)
         # use the inputs' index
         # We also want to create a new dataframe, otherwise the resulting
         # object would be a RatingTable instance.
-        results = pd.DataFrame(results,)
+        results = pd.DataFrame(results)
         results.index = passed_inputs.index
 
         return results
@@ -409,6 +456,5 @@ class InterpolatedRatingTabe(BaseRatingTable):
         
         #  Define the lookup table
         lookup_table = self.make_lookup_table([passed_input])
-        print(lookup_table)
 
         return lookup_table.loc[passed_input, self.outputs].to_dict()
