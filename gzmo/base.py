@@ -12,7 +12,7 @@ class FancyDict(dict):
             return ret
         else:
             # Raise an error
-            raise AttributeError
+            raise AttributeError(f'Attribute {name} does not exist.')
 
     def get(self, key: str, default = None):
         # `get` will allow a recursive search.

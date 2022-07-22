@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 from abc import ABC
+import graphlib
+import multiprocessing as mp
 
 import pandas as pd
 import numpy as np
@@ -14,11 +14,11 @@ from gzmo.rating import helpers
 class RatingPlan(FancyDict):
     """This class handles the initialization of a rating plan."""
 
-    def __init__(self, name: str) -> None:
-        self.name = name
+    def __init__(self) -> None:
+        pass
 
     @classmethod
-    def from_excel(cls, name: str, io: str, *args, **kwargs) -> None:
+    def from_excel(cls, io: str, *args, **kwargs) -> None:
         """A wrapper of panda's read_excel function that
             - reads and prepare rating tables from the excel file
             - adds the tables to the rating plan.
@@ -27,7 +27,7 @@ class RatingPlan(FancyDict):
             See pandas.read_excel documentation for details.
         """
         # initialize rating plan
-        rating_plan = cls(name)
+        rating_plan = cls()
         # read excel tables
         excel_file = pd.read_excel(io, sheet_name = None, *args, **kwargs)
         for table_name, table in excel_file.items():
@@ -39,11 +39,24 @@ class RatingPlan(FancyDict):
         # read excel tables
         excel_file = pd.read_excel(io, sheet_name = None, *args, **kwargs)
         for table_name, table in excel_file.items():
-            rating_table = LookupRatingTable.from_unprocessed_table(table, table_name)
+            rating_table = LookupRatingTable.from_unprocessed_table(table)
             self.register(**{table_name: rating_table})
         return self
 
-    def rate(self, book: core.Book):
+    def make_dag(self):
+        dependencies = {}
+        for name_i, step_i in self.items():
+            upstream = {
+                name_j
+                for name_j, step_j in self.items()
+                if (set(step_i.inputs) & set(step_j.outputs))
+                }
+            dependencies[name_i] = upstream
+        dag = graphlib.TopologicalSorter(dependencies)
+        
+        return dag
+
+    def rate(self, book: core.Book, parallel = True):
 
         # Initialize FancyDict to store results
         session = FancyDict()
@@ -55,19 +68,88 @@ class RatingPlan(FancyDict):
             'book': book
         })
         
-        # each rating table is a rating step
-        # and each operation is also a rating step
-        for rating_step_name, rating_step in self.items():
-            print(rating_step_name)
-            rating_result = rating_step(session)
-            rating_results.register(**{rating_step_name: rating_result})
+        if parallel:
+            self._rate_parallel(session)
+        else:
+            self._rate_sequential(session)
         
         return session
 
-class RatingStep(ABC):
+    def _rate_sequential(self, session):
+        
+        # make dag
+        dag = self.make_dag()
+        for rating_step_name in dag.static_order():
+                rating_step = self[rating_step_name]
+                rating_result = rating_step.evaluate(session)
+                session.rating_results.register(
+                    **{rating_step_name: rating_result}
+                    )
 
-    def __init__(self, name) -> None:
+    def _rate_parallel(self, session):
+        
+        # each worker will take rating steps from the queue to work on
+        def worker(queue_to_process, queue_results):
+            while True:
+                # get work
+                work = queue_to_process.get()  # blocks
+                # check for stop
+                if work is None:
+                    break
+                # unpack work
+                rating_step_name, rating_step, session = work
+                # do the work
+                rating_step_result = rating_step.evaluate(session)
+                # put the results in the results queue
+                queue_results.put((rating_step_name, rating_step_result))
+                # signal that this task is completed
+                queue_to_process.task_done()
+        
+        # make dag
+        dag = self.make_dag()
+        dag.prepare()
+
+        # Create the shared queues to pass rating steps to workers to work on
+        # and results back to the main process to load into the session
+        queue_to_process = mp.JoinableQueue()
+        queue_results = mp.Queue()
+
+        # start the worker processes
+        num_workers = mp.cpu_count()
+        with mp.Pool() as pool:
+            for _ in range(num_workers):
+                pool.apply_async(worker, queue_to_process, queue_results)
+        
+        # dag is active when progress can be made:
+        #   1) there are nodes ready not yet returned by `get_ready()`, or
+        #   2) # nodes marked `done` < # nodes returned by `get_ready()`
+        while dag.is_active():
+            # `get_ready()`` returns all nodes that are ready
+            for rating_step_name in dag.get_ready():
+                # add the rating step to the queue of rating steps to process
+                queue_to_process.put(
+                    (rating_step_name, self[rating_step_name], session)
+                    )
+                
+            rating_step_name, rating_step_result = queue_results.get()
+            dag.done(rating_step_name)
+        
+        # send poison pill to kill workers
+        for _ in range(num_workers):
+            queue_to_process.put(None)
+        
+        # wait for the worker processes to exit
+        pool.close()
+        pool.join()
+
+class RatingStep:
+
+    def __init__(self, inputs, outputs, eval_func = None) -> None:
         super().__init__()
+        self.inputs = inputs
+        self.outputs = outputs
+        if eval_func:
+            self.evaluate = eval_func
     
 
 class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
@@ -94,8 +176,7 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
 
     def __init__(
             self,
-            data: pd.Dataframe,
-            name: str,
+            data: pd.DataFrame,
             inputs: list,
             outputs: list,
             wildcard_characters = None,
@@ -124,12 +205,10 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
             additional_info (dict, optional): Any additional info to be
                 attached to the rating table. Defaults to None.
         """
-        super().__init__(data = data.copy(), **kwargs)
+        pd.DataFrame.__init__(self, data = data.copy(), **kwargs)
+        RatingStep.__init__(self, inputs = inputs, outputs = outputs, **kwargs)
         
         # information about the rating table
-        self.name = name
-        self.inputs = inputs
-        self.outputs = outputs
         self.wildcard_characters = \
             wildcard_characters or BaseRatingTable.default_wildcard_characters
         self.version = version
@@ -181,7 +260,7 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
         if args:
             if isinstance(args[0], (pd.DataFrame, FancyDict)):
                 if (inputs := args[0].get(self.inputs)) is None:
-                    raise RuntimeError(f'Unable to get inputs for {self.name}')
+                    raise RuntimeError(f'Unable to get inputs.')
                 else:
                     return self._eval_table(inputs)
             elif isinstance(args[0], dict):
@@ -201,13 +280,12 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
         pass
     
     @classmethod
-    def from_unprocessed_table(cls, df, name, **kwargs):
+    def from_unprocessed_table(cls, df, **kwargs):
         processed_rating_table, inputs, outputs = \
             helpers.process_rating_table(df)
-        return cls(processed_rating_table, name, inputs, outputs, **kwargs)
+        return cls(processed_rating_table, inputs, outputs, **kwargs)
 
 class LookupRatingTable(BaseRatingTable):
-
 
     def _eval_table(self, input_table):
         # The function to handle dataframe inputs
@@ -218,7 +296,7 @@ class LookupRatingTable(BaseRatingTable):
         # if there are no inputs, simply do a cross join
         if self.inputs == []:
             assert len(self) == 1, \
-                f'{self.name} has no inputs but has more than 1 row.'
+                f'Table has no inputs but has more than 1 row.'
             empty_dataframe = pd.DataFrame(index = input_table.index)
             # ret = empty_dataframe \
             #     .assign(temp_join_key = 1) \
@@ -384,8 +462,8 @@ class LookupRatingTable(BaseRatingTable):
 
 class InterpolatedRatingTable(BaseRatingTable):
     
-    def __init__(self, data, name, inputs, outputs, **kwargs) -> None:
-        super().__init__(data, name, inputs, outputs, **kwargs)
+    def __init__(self, data, inputs, outputs, **kwargs) -> None:
+        super().__init__(data, inputs, outputs, **kwargs)
         # flatten multiindex to single level index for interpolation
         # __init__ will have called _check_requirements,
         #   which makes sure there is only 1 level of index
@@ -394,11 +472,10 @@ class InterpolatedRatingTable(BaseRatingTable):
     @classmethod
     def from_rating_table(cls, rating_table, **kwargs):
         # initialize a new instance
-        name = rating_table.name
         inputs = rating_table.inputs
         outputs = rating_table.outputs
         rating_table.index = pd.Index(rating_table.index.get_level_values(0))
-        ret = cls(rating_table, name, inputs, outputs)
+        ret = cls(rating_table, inputs, outputs)
         # inherit other attributes
         ret.__dict__.update(rating_table.__dict__)
         return ret
