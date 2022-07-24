@@ -26,6 +26,7 @@ wgic_policies = Book(**policy_tables)
 
 
 def calculate_final_premium(session):
+    print(session['book'].keys())
     ret = \
         session.base_rates \
         * session.amount_of_insurance_factor \
@@ -57,4 +58,4 @@ final_premium = RatingStep(
 
 wgic_01.register(final_premium = final_premium)
 
-rated = wgic_01.rate(wgic_policies, parallel = False)
+session = wgic_01.rate(wgic_policies, parallel = True)

@@ -1,6 +1,9 @@
 from abc import ABC
+from logging import exception
+import traceback
 import graphlib
 import multiprocessing as mp
+import queue
 
 import pandas as pd
 import numpy as np
@@ -49,9 +52,10 @@ class RatingPlan(FancyDict):
             upstream = {
                 name_j
                 for name_j, step_j in self.items()
-                if (set(step_i.inputs) & set(step_j.outputs))
+                if (set(step_i.inputs) & (set(step_j.outputs) | {name_j}))
                 }
             dependencies[name_i] = upstream
+            print(name_i, upstream)
         dag = graphlib.TopologicalSorter(dependencies)
         
         return dag
@@ -75,72 +79,99 @@ class RatingPlan(FancyDict):
         
         return session
 
-    def _rate_sequential(self, session):
-        
-        # make dag
-        dag = self.make_dag()
-        for rating_step_name in dag.static_order():
-                rating_step = self[rating_step_name]
-                rating_result = rating_step.evaluate(session)
-                session.rating_results.register(
-                    **{rating_step_name: rating_result}
-                    )
-
-    def _rate_parallel(self, session):
-        
-        # each worker will take rating steps from the queue to work on
-        def worker(queue_to_process, queue_results):
-            while True:
-                # get work
-                work = queue_to_process.get()  # blocks
-                # check for stop
-                if work is None:
-                    break
-                # unpack work
-                rating_step_name, rating_step, session = work
-                # do the work
+    # each worker will take rating steps from the queue to work on
+    def _worker(self, queue_to_process, queue_results):
+        while True:
+            # get work
+            work = queue_to_process.get()  # blocks
+            # check for stop
+            if work is None:
+                break
+            # unpack work
+            rating_step_name, rating_step, session = work
+            # do the work
+            try:
                 rating_step_result = rating_step.evaluate(session)
+            except Exception as e:
+                # let the main process know if there is an error
+                queue_results.put((rating_step_name, e))
+            else:
                 # put the results in the results queue
                 queue_results.put((rating_step_name, rating_step_result))
                 # signal that this task is completed
                 queue_to_process.task_done()
-        
+            
+
+
+    def _rate_parallel(self, session):
+
+        def handle_worker_exceptions(e):
+            raise e
+
         # make dag
         dag = self.make_dag()
         dag.prepare()
 
         # Create the shared queues to pass rating steps to workers to work on
         # and results back to the main process to load into the session
-        queue_to_process = mp.JoinableQueue()
-        queue_results = mp.Queue()
+        manager = mp.Manager()
+        queue_to_process = manager.JoinableQueue()
+        queue_results = manager.Queue()
 
         # start the worker processes
         num_workers = mp.cpu_count()
-        with mp.Pool() as pool:
+        with mp.Pool(num_workers) as pool:
             for _ in range(num_workers):
-                pool.apply_async(worker, queue_to_process, queue_results)
-        
-        # dag is active when progress can be made:
-        #   1) there are nodes ready not yet returned by `get_ready()`, or
-        #   2) # nodes marked `done` < # nodes returned by `get_ready()`
-        while dag.is_active():
-            # `get_ready()`` returns all nodes that are ready
-            for rating_step_name in dag.get_ready():
-                # add the rating step to the queue of rating steps to process
-                queue_to_process.put(
-                    (rating_step_name, self[rating_step_name], session)
+                async_result = pool.apply_async(
+                    self._worker,
+                    args = (queue_to_process, queue_results),
+                    error_callback = handle_worker_exceptions
                     )
-                
-            rating_step_name, rating_step_result = queue_results.get()
-            dag.done(rating_step_name)
-        
-        # send poison pill to kill workers
-        for _ in range(num_workers):
-            queue_to_process.put(None)
-        
-        # wait for the worker processes to exit
-        pool.close()
-        pool.join()
+            
+            # dag is active when progress can be made:
+            #   1) there are nodes ready not yet returned by `get_ready()`, or
+            #   2) # nodes marked `done` < # nodes returned by `get_ready()`
+            while dag.is_active():
+                # `get_ready()`` returns all nodes that are ready
+                for rating_step_name in dag.get_ready():
+                    # add the rating step to the queue of rating steps to process
+                    queue_to_process.put(
+                        (rating_step_name, self[rating_step_name], session)
+                        )
+                try:
+                    rating_step_name, rating_step_result = \
+                        queue_results.get(timeout = 1)
+                    if isinstance(rating_step_result, Exception):
+                        e = rating_step_result
+                        runtime_error = \
+                            RuntimeError(f'Error when evaluating {rating_step_name}')
+                        e.__cause__ = runtime_error
+                        traceback.print_exception(type(e), e, e.__traceback__)
+                        pool.terminate()
+                        pool.join()
+                        return
+                    else:
+                        session.rating_results.register(
+                        **{rating_step_name: rating_step_result}
+                        )
+                        dag.done(rating_step_name)
+                except queue.Empty:
+                    pass
+            
+            # send poison pill to kill workers
+            for _ in range(num_workers):
+                queue_to_process.put(None)
+
+
+    def _rate_sequential(self, session):
+        # make dag
+        dag = self.make_dag()
+        for rating_step_name in dag.static_order():
+                rating_step = self[rating_step_name]
+                rating_step_result = rating_step.evaluate(session)
+                session.rating_results.register(
+                    **{rating_step_name: rating_step_result}
+                    )
 
 class RatingStep:
 
