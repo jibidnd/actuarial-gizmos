@@ -1,5 +1,5 @@
 from abc import ABC
-from logging import exception
+import warnings
 import traceback
 import graphlib
 import multiprocessing as mp
@@ -9,8 +9,7 @@ import pandas as pd
 import numpy as np
 
 from gzmo import core
-from gzmo import rating
-from gzmo.base import FancyDict
+from gzmo.base import FancyDict, AccessLogger
 from gzmo.rating import helpers
 
 
@@ -34,7 +33,7 @@ class RatingPlan(FancyDict):
         # read excel tables
         excel_file = pd.read_excel(io, sheet_name = None, *args, **kwargs)
         for table_name, table in excel_file.items():
-            rating_table = LookupRatingTable.from_unprocessed_table(table, table_name)
+            rating_table = LookupRatingTable.from_unprocessed_table(table)
             rating_plan.register(**{table_name: rating_table})
         return rating_plan
 
@@ -44,7 +43,7 @@ class RatingPlan(FancyDict):
         for table_name, table in excel_file.items():
             rating_table = LookupRatingTable.from_unprocessed_table(table)
             self.register(**{table_name: rating_table})
-        return self
+        return
 
     def make_dag(self):
         dependencies = {}
@@ -55,7 +54,6 @@ class RatingPlan(FancyDict):
                 if (set(step_i.inputs) & (set(step_j.outputs) | {name_j}))
                 }
             dependencies[name_i] = upstream
-            print(name_i, upstream)
         dag = graphlib.TopologicalSorter(dependencies)
         
         return dag
@@ -175,12 +173,32 @@ class RatingPlan(FancyDict):
 
 class RatingStep:
 
-    def __init__(self, inputs, outputs, eval_func = None) -> None:
+    def __init__(self, eval_func = None, inputs = None, outputs = None) -> None:
         super().__init__()
-        self.inputs = inputs
-        self.outputs = outputs
-        if eval_func:
-            self.evaluate = eval_func
+        # if no inputs are passed, try to get it from eval_func
+        if inputs:
+            self.inputs = inputs
+        elif eval_func:
+            try:
+                self.inputs = self.auto_get_inputs(eval_func)
+                print(self.inputs)
+            except:
+                warnings.warn(
+                    'Unable to auto-get inputs for rating step.' + \
+                    'Assuming empty input list'
+                    )
+                self.inputs = []
+        else:
+            self.inputs = []
+        self.outputs = outputs or []
+        self.evaluate = eval_func
+    
+    @staticmethod
+    def auto_get_inputs(eval_func):
+            access_logger = AccessLogger()
+            _ = eval_func(access_logger)
+            accessed = [path[-1] for path in access_logger.accessed]
+            return accessed
     
 
 class BaseRatingTable(pd.DataFrame, RatingStep, ABC):

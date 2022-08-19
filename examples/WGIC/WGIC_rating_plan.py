@@ -1,5 +1,4 @@
 import pandas as pd
-from gzmo.base import FancyDict
 
 from gzmo.core import Book
 from gzmo.rating.rating_plan import RatingPlan, InterpolatedRatingTable, RatingStep
@@ -26,7 +25,6 @@ wgic_policies = Book(**policy_tables)
 
 
 def calculate_final_premium(session):
-    print(session['book'].keys())
     ret = \
         session.base_rates \
         * session.amount_of_insurance_factor \
@@ -39,23 +37,6 @@ def calculate_final_premium(session):
         * session.multi_policy_discount_factor
     return ret
 
-final_premium = RatingStep(
-    inputs = [
-        'base_rates',
-        'amount_of_insurance_factor',
-        'territory_factor',
-        'protectclass_constr_factor',
-        'underwriting_tier_factor',
-        'deductible_factor',
-        'new_home_discount_factor',
-        'five_year_claim_free_factor',
-        'multi_policy_discount_factor'
-    ],
-    outputs = ['final_premium'],
-    eval_func = calculate_final_premium
-)
-
-
-wgic_01.register(final_premium = final_premium)
+wgic_01.register(final_premium = RatingStep(calculate_final_premium))
 
 session = wgic_01.rate(wgic_policies, parallel = True)
