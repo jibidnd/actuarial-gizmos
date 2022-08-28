@@ -1,4 +1,5 @@
 from abc import ABC
+from distutils.log import warn
 import warnings
 import traceback
 import graphlib
@@ -8,16 +9,19 @@ import queue
 import pandas as pd
 import numpy as np
 
-from gzmo import core
-from gzmo.base import FancyDict, AccessLogger
+from gzmo.base import FancyDict, SearchableDict, AccessLogger
 from gzmo.rating import helpers
 
 
 class RatingPlan(FancyDict):
     """This class handles the initialization of a rating plan."""
 
-    def __init__(self) -> None:
-        pass
+    @classmethod
+    def from_unprocessed_dataframes(cls, dict_unprocessed_dataframes: dict):
+        rating_plan = cls()
+        rating_plan.register_unprocessed_dataframes(
+            **dict_unprocessed_dataframes)
+        return rating_plan
 
     @classmethod
     def from_excel(cls, io: str, *args, **kwargs) -> None:
@@ -30,19 +34,21 @@ class RatingPlan(FancyDict):
         """
         # initialize rating plan
         rating_plan = cls()
-        # read excel tables
-        excel_file = pd.read_excel(io, sheet_name = None, *args, **kwargs)
-        for table_name, table in excel_file.items():
-            rating_table = LookupRatingTable.from_unprocessed_table(table)
-            rating_plan.register(**{table_name: rating_table})
+        rating_plan.read_excel(io, *args, **kwargs)
         return rating_plan
+
+    def register_unprocessed_dataframes(self, **unprocessed_dataframes):
+        for table_name, table in unprocessed_dataframes.items():
+            rating_table = LookupRatingTable.from_unprocessed_table(table)
+            self.register(**{table_name: rating_table})
 
     def read_excel(self, io: str, *args, **kwargs):
         # read excel tables
         excel_file = pd.read_excel(io, sheet_name = None, *args, **kwargs)
-        for table_name, table in excel_file.items():
-            rating_table = LookupRatingTable.from_unprocessed_table(table)
-            self.register(**{table_name: rating_table})
+        self.register_unprocessed_dataframes(**excel_file)
+        # for table_name, table in excel_file.items():
+        #     rating_table = LookupRatingTable.from_unprocessed_table(table)
+        #     self.register(**{table_name: rating_table})
         return
 
     def make_dag(self):
@@ -58,11 +64,11 @@ class RatingPlan(FancyDict):
         
         return dag
 
-    def rate(self, book: core.Book, parallel = True):
+    def rate(self, book: SearchableDict, parallel = True):
 
         # Initialize FancyDict to store results
-        session = FancyDict()
-        rating_results = FancyDict()
+        session = SearchableDict()
+        rating_results = SearchableDict()
         # we want to search the rating results first
         # so we register that first
         session.register(**{
@@ -181,7 +187,6 @@ class RatingStep:
         elif eval_func:
             try:
                 self.inputs = self.auto_get_inputs(eval_func)
-                print(self.inputs)
             except:
                 warnings.warn(
                     'Unable to auto-get inputs for rating step.' + \
@@ -281,19 +286,18 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
         return        
         
 
-    # # to retain subclasses through pandas data manipulations
-    # # https://pandas.pydata.org/docs/development/extending.html
-    # # Also see https://github.com/pandas-dev/pandas/issues/19300
-    # @property
-    # def _constructor(self):
-    #     return BaseRatingTable._internal_ctor
+    # to retain subclasses through pandas data manipulations
+    # https://pandas.pydata.org/docs/development/extending.html
+    # Also see https://github.com/pandas-dev/pandas/issues/19300
+    @property
+    def _constructor(self):
+        return BaseRatingTable._internal_ctor
 
-    # @classmethod
-    # def _internal_ctor(cls, *args, **kwargs):
-    #     kwargs['name'] = None
-    #     kwargs['inputs'] = None
-    #     kwargs['outputs'] = None
-    #     return cls(*args, **kwargs)
+    @classmethod
+    def _internal_ctor(cls, *args, **kwargs):
+        kwargs['inputs'] = None
+        kwargs['outputs'] = None
+        return cls(*args, **kwargs)
 
     def __call__(self, *args, **kwargs):
         return self.evaluate(*args, **kwargs)
@@ -302,6 +306,32 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
         missing_outputs = set(self.outputs) - set(self.columns)
         assert (missing_outputs == set()), \
             f'Some outputs do not have a column: {missing_outputs}'
+
+    @property
+    def inputs(self):
+        """ This ensures a modified RatingTable returns the correct inputs.
+
+        NOTE: This is a "read-only" attribute, and any values set (to `inputs`)
+                by the user will not be recorded.
+        """        
+        return [i for i in self.index.names if i is not None]
+
+    @inputs.setter
+    def inputs(self, value):
+        pass
+    
+    @property
+    def outputs(self):
+        """ This ensures a modified RatingTable returns the correct outputs.
+
+        NOTE: This is a "read-only" attribute, and any values set (to `outputs`)
+                by the user will not be recorded.
+        """   
+        return list(self.columns)
+    
+    @outputs.setter
+    def outputs(self, value):
+        pass
 
     # TODO: use typing.overload for type hinting
     def evaluate(self, *args, **kwargs):

@@ -4,7 +4,8 @@ import pytest
 
 from pytest_lazyfixture import lazy_fixture
 
-from gzmo import core
+from gzmo.base import SearchableDict
+from gzmo.helpers import set_unique_index
 
 def test_fails_nonunique_index():
     # passing dataframes with non-unique indices should raise
@@ -18,13 +19,13 @@ def test_fails_nonunique_index():
         Exception,
         match = f'Unable to set unique index for dataframe testdf'
         ):
-        book = core.Book(testdf = df_nonunique_idx)
+        book = SearchableDict(testdf = df_nonunique_idx)
     
 def test_set_joinable_indices(portfolio_simple_indexed):
     # this tests the Book.set_joinable_index function
     # any column that appears in another dataframe should be in the index
     # initialize the book
-    book = core.Book(**portfolio_simple_indexed)
+    book = SearchableDict(**portfolio_simple_indexed)
     # none of policy_info's other columns appear in other dataframes
     assert book['policy_info'].index.names == \
         ['policy_number']
@@ -62,11 +63,11 @@ def test_set_joinable_indices(portfolio_simple_indexed):
 def test_set_unique_index(portfolio_simple, table_name, expected_index):
     # this tests the Book.set_unique_indices function
     tempdf = portfolio_simple[table_name]
-    out_df = core.set_unique_index(tempdf, max_cols = 5)
+    out_df = set_unique_index(tempdf, max_cols = 5)
     assert out_df.index.names == expected_index
 
 def test_autojoin_left(portfolio_simple_indexed):
-    book = core.Book(**portfolio_simple_indexed)
+    book = SearchableDict(**portfolio_simple_indexed)
     lst_columns = [
         'policy_number', 'credit_tier',         # policy level
         'driver_number', 'license_number',      # driver level
@@ -91,7 +92,7 @@ def test_autojoin_left(portfolio_simple_indexed):
     assert len(joined) == 13
 
 def test_autojoin_inner(portfolio_simple_indexed):
-    book = core.Book(**portfolio_simple_indexed)
+    book = SearchableDict(**portfolio_simple_indexed)
     lst_columns = [
         'policy_number', 'credit_tier',         # policy level
         'driver_number', 'license_number',      # driver level

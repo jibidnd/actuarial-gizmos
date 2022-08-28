@@ -1,6 +1,6 @@
 import pandas as pd
 
-from gzmo.core import Book
+from gzmo.base import SearchableDict
 from gzmo.rating.rating_plan import RatingPlan, InterpolatedRatingTable, RatingStep
 
 
@@ -21,7 +21,7 @@ wgic_01.register(
 # read in policies
 policy_tables = \
     pd.read_excel(r'examples/WGIC/WGIC_policies.xlsx', sheet_name = None)
-wgic_policies = Book(**policy_tables)
+wgic_policies = SearchableDict(**policy_tables)
 
 
 def calculate_final_premium(session):

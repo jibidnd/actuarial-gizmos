@@ -97,7 +97,6 @@ def process_rating_table(df, wildcard_characters = None) -> pd.DataFrame:
         df = df.rename(columns = {f'{c}_': c for c in outputs})
         df = df.loc[:, outputs]
 
-        
     return df, inputs, outputs
 
 def get_wildcard_markers(input_columns, wildcard_characters):

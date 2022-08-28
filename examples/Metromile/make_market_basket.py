@@ -1,13 +1,16 @@
-from distutils.archive_util import make_archive
 import pandas as pd
 import numpy as np
 import string
 
-from gzmo.rating.helpers import make_market_basket
+from gzmo.rating.rating_plan import RatingPlan
+from gzmo.rating.utils import make_market_basket, make_random_market_basket
 
 # read in rating plan for list of possible occupation, zip codes, etc
-df_rating_plan = \
+dict_ratingplan = \
     pd.read_excel(r'examples/Metromile/NJ06.xlsx', sheet_name = None)
+# initialize an empty rating plan
+nj06 = RatingPlan.from_unprocessed_dataframes(dict_ratingplan)
+
 
 # dict_test = {
 #     'policy_id': 'SERIAL',
@@ -40,8 +43,8 @@ dict_policies = {
         np.rint(np.random.normal(750, 100, num_policies))
     ),
     # roughly the list of zips in NJ
-    'zip_code': \
-        df_rating_plan['territory_assignment']._zipcode.unique(),
+    'zipcode': \
+        dict_ratingplan['territory_assignment']._zipcode.unique(),
     'homeowner': 'YN',
     'homeowner_at_init': 'YN',
     'vehicle_count_at_init': 'YN',
@@ -62,6 +65,9 @@ dict_policies = {
         ],
     'silver_continuous_insurance_discount_at_init': 'YN',
     'gold_continuous_insurance_discount_at_init': 'YN',
+    'nb_five_year_accident_free_discount': 'YN',
+    'five_year_claim_free_discount': 'YN',
+    'three_year_safe_driving_discount': 'YN',
     'BI_limit': ['10/10', '15/30', '25/50', '50/100', '100/300', '250/500'],
     'limitation_on_lawsuits': ['LIMITED', 'FULL'],
     'PD_limit': [5, 10, 25, 50, 100],
@@ -80,18 +86,28 @@ df_policies = make_market_basket(dict_policies, num_policies)
 # Each policy will get anywhere from 1 to 4 drivers
 num_drivers_per_policy = np.random.randint(1, 5, num_policies)
 driver_policy_ids = df_policies['policy_id'].repeat(num_drivers_per_policy)
+driver_ids = driver_policy_ids.groupby(driver_policy_ids).cumcount() + 1
 num_drivers = len(driver_policy_ids)
 
+# valid education/occupation combinations
+df_edu_occ_choices = dict_ratingplan['occupation_group'][
+    ['_employment_status', '_occupation_description']
+    ].sample(num_drivers, replace = True)
+
 dict_drivers = {
-    'policy_id': df_policies['policy_id'].repeat(num_drivers_per_policy),
-    'driver_id': 'SERIAL',
+    'policy_id': driver_policy_ids,
+    'driver_id': driver_ids,
+    'is_primary': driver_ids == 1,
+    'list_only': \
+        (np.random.random_sample(num_drivers) < 0.1) & \
+        (driver_ids != 1),
     'age': np.rint(np.random.normal(35, 30, num_drivers)).clip(16, 120),
     'gender': 'MF',
     'marital_status': 'SM',
     'months_experienced': (0, 60),
     'defensive_driver': 'YN',
-    'employment_status': \
-        df_rating_plan['occupation_group']._employment_status.unique(),
+    'employment_status': df_edu_occ_choices['_employment_status'],
+    'occupation_description': df_edu_occ_choices['_occupation_description'],
     'education_level': '1234567X',
     'aaf_count': \
         np.random.choice(5, num_drivers, p = [0.85, 0.1, 0.025, 0.02, 0.005]),
@@ -116,11 +132,12 @@ df_drivers = make_market_basket(dict_drivers, num_drivers)
 # Each policy will get anywhere from 1 to 4 vehicles
 num_vehicles_per_policy = np.random.randint(1, 5, num_policies)
 vehicle_policy_ids = df_policies['policy_id'].repeat(num_vehicles_per_policy)
+vehicle_ids = vehicle_policy_ids.groupby(vehicle_policy_ids).cumcount() + 1
 num_vehicles = len(vehicle_policy_ids)
 
 # year, make, model, style need to be consistent with each other
 # i.e. you can't have a Toyota Civic!
-df_vehicle_sample = df_rating_plan['vehicle_symbol_factor'][
+df_vehicle_sample = dict_ratingplan['vehicle_symbol_factor'][
     ['_model_year_left', '_model_year_right', '_make', '_model', '_style']
     ].sample(num_vehicles)
 df_vehicle_sample['model_year'] = np.random.randint(
@@ -132,7 +149,7 @@ df_vehicle_sample['model_year'] = np.random.randint(
 
 dict_vehicles = {
     'policy_id': vehicle_policy_ids,
-    'vehicle_id': 'SERIAL',
+    'vehicle_id': vehicle_ids,
     'model_year': df_vehicle_sample['model_year'],
     'make': df_vehicle_sample['_make'],
     'model': df_vehicle_sample['_model'],
@@ -151,6 +168,7 @@ dict_vehicles = {
     'full_coverage_on_vehicle': 'YN',
     'business_use': 'N',
     'full_coverage_code': 'ASN',
+    'full_coverage_at_init': 'ASN'
     'LOAN_limit': ['Y', 'NONE'],
     'RENT_limit': ['30/900', '40/1200', '50/1500', 'NONE'],
     'ROAD_limit': ['Y', 'NONE'],
@@ -159,9 +177,32 @@ dict_vehicles = {
     'ESSSRV_limit': ['12/4380', '12/8760', '20/14600', '0/0'],
     'DEATH_limit': ['BASE', 10, 'NONE'],
     'FUNERAL_limit': [1, 2, 'NONE'],
-    'funeral_coverage_group': df_rating_plan['IL_limit_factor']._IL_limit.unique(),
+    'funeral_coverage_group': dict_ratingplan['IL_limit_factor']._IL_limit.unique(),
     'IL_limit': ['BLANK', 'YOU_AND_SPOUSE', 'YOU_AND_SPOUSE_AND_RESIDENT_RELATIVES'],
-    'COMP_deductible': df_rating_plan['COMP_deductible_factor']._COMP_deductible.unique(),
+    'COMP_deductible': dict_ratingplan['COMP_deductible_factor']._COMP_deductible.unique(),
     'COLL_deductible': [100, 150, 250, 500, 750, 1000, 1500, 2000, 9999]
 }
 df_vehicles = make_market_basket(dict_vehicles, num_vehicles)
+
+
+
+# df = make_random_market_basket(nj06, 10)
+
+
+# df
+
+# set(df.columns) - (set(df_policies.columns) | set(df_drivers.columns) | set(df_vehicles.columns))
+
+
+# if dict_ratingplan['base_rates'].reset_index([]).inputs:
+#     print('hello')
+
+# arrays = [[1, 1, 2, 2, 3, 3], ['red', 'blue', 'red', 'blue', 'red', 'red'], list('123456')]
+# idx = pd.MultiIndex.from_arrays(arrays, names=('number', 'color', 'rand'))
+# testdf = pd.DataFrame(index = idx)
+
+# testdf.reset_index('rand', drop = True).drop_duplicates()
+
+# # idx.droplevel(['b']).drop_duplicates()
+
+# # idx.drop

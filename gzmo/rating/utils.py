@@ -1,3 +1,4 @@
+import itertools
 import pandas as pd
 import numpy as np
 
@@ -44,6 +45,12 @@ def make_random_market_basket(rating_plan, market_basket_size, seed = None):
         if isinstance(step, BaseRatingTable)
     }
 
+    # Get set of all outputs:
+    # if these also happen to be inputs, we can ignore them
+    outputs = list(itertools.chain(
+        *[step.outputs for step in rating_steps_to_process.values()]
+        ))
+
     rating_steps_processed = []
 
     for name_i, step_i in rating_steps_to_process.items():
@@ -51,43 +58,58 @@ def make_random_market_basket(rating_plan, market_basket_size, seed = None):
         if name_i in rating_steps_processed:
             continue
         
+        # drop from index any inputs that also exist as an output (elsewhere)
+        also_outputs = list(set(step_i.inputs) & set(outputs))
+        step_i = step_i.reset_index(also_outputs, drop = True)
+        # drop duplicates
+        step_i = step_i.loc[~step_i.index.duplicated()]
+        
         # if this table doesn't have inputs, no work to do
         if not step_i.inputs:
             continue
         
         # define the numeric and non-numeric inputs
-        numeric_inputs = [
+        step_i_numeric_inputs = [
             i for i in step_i.inputs
             if isinstance(step_i.index.get_level_values(i), pd.IntervalIndex) \
                 or step_i.index.is_numeric()
 
             ]
-        non_numeric_inputs = list(set(step_i.inputs) - set(numeric_inputs))
+        step_i_non_numeric_inputs = \
+            list(set(step_i.inputs) - set(step_i_numeric_inputs))
 
         # get all associated rating steps
-        # i.e. has any common non-numeric inputs with step_i
+        # i.e. has any common non-numeric, non-outupt inputs with step_i
         associated_rating_steps = {
             name_j: step_j.loc[:, []]
             for name_j, step_j in rating_plan.items()
             if (
-                (set(step_j.inputs) & set(non_numeric_inputs))
+                (
+                    set(step_j.inputs)
+                    & (set(step_i_non_numeric_inputs) - set(outputs))
+                )
                 and (name_j != name_i)
             )
         }
 
-        # remove any numeric inputs from the associated rating steps
-        associated_rating_steps = {
-            name_j: step_j.reset_index(
-                [idx for idx in step_j.index.names if idx in numeric_inputs],
-                drop = True
-                )
-            for name_j, step_j in associated_rating_steps.items()
-        }
-
-        # join by index
+        # process each associated step and join by index if appropriate
         joined = step_i.copy()
         limit = 1000000
         for name_j, step_j in associated_rating_steps.items():
+
+            # first remove any inputs that is either:
+            #   - numeric and exists in step_i.inputs
+            #   - an output elsewhere
+            # By definition of `associated_rating_steps`,
+            #   there should be other inputs left.
+            to_remove = list(
+                set(step_j.inputs) &
+                (set(step_i_numeric_inputs) | set(outputs))
+                )
+            step_j = step_j.reset_index(to_remove, drop = True)
+            # drop duplicates
+            step_j = step_j.loc[~step_j.index.duplicated()]
+
             # limit the number of rows to sample from
             joined = joined.sample(min(len(joined), int(limit / len(step_j))))
             joined = \
@@ -227,16 +249,6 @@ def make_market_basket(dict_specification, market_basket_size, seed = None):
             arr[:] = v
             processed_dict[k] = arr 
 
-    # df = pd.DataFrame(processed_dict)
+    df = pd.DataFrame(processed_dict)
 
-    return processed_dict
-
-
-
-# test
-# from gzmo.rating.rating_plan import RatingPlan
-
-# # initialize an empty rating plan
-# nj06 = RatingPlan.from_excel(r'examples/Metromile/NJ06.xlsx')
-
-# df = make_random_market_basket(nj06, 10)
+    return df
