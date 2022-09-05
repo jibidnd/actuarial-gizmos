@@ -63,7 +63,7 @@ def make_random_market_basket(rating_plan, market_basket_size, seed = None):
         step_i = step_i.reset_index(also_outputs, drop = True)
         # drop duplicates
         step_i = step_i.loc[~step_i.index.duplicated()]
-        
+
         # if this table doesn't have inputs, no work to do
         if not step_i.inputs:
             continue
@@ -123,6 +123,8 @@ def make_random_market_basket(rating_plan, market_basket_size, seed = None):
             rating_steps_processed.append(name_j)
 
         joined = joined.loc[:, []].reset_index(drop = False)
+        # drop wildcards
+        joined = joined.loc[~(joined == '*').any(axis = 1)]
 
         # add to the set to later sample from
         disjoint_input_sets.append(joined)

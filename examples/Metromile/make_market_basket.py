@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import string
+from gzmo.base import FancyDict, SearchableDict
 
 from gzmo.rating.rating_plan import RatingPlan
 from gzmo.rating.utils import make_market_basket, make_random_market_basket
@@ -12,20 +13,29 @@ dict_ratingplan = \
 nj06 = RatingPlan.from_unprocessed_dataframes(dict_ratingplan)
 
 
-# dict_test = {
-#     'policy_id': 'SERIAL',
-#     'policy_type': 'SB',
-#     'advance_shop_days': (1, 60),
-#     'eft': ['Y', 'N'],
-#     'default': 'X',
-#     'num_policies': 1
-# }
-
-# df = make_market_basket(dict_test, 5)
-
 # Policies
 # =============================================================================
 num_policies = 1000
+# fpb_cov = np.random.random(num_policies)
+il_limit = np.random.choice(
+    dict_ratingplan['IL_limit_factor']._IL_limit.unique(),
+    num_policies
+    )
+funeral_limit = np.where(
+    np.isin(il_limit, ['100/5200', 'NONE']),
+    np.random.choice([1, 'NONE'], num_policies),
+    2
+    )
+fpb_coverage_group = np.where(
+    np.isin(il_limit, ['100/5200', 'NONE']),
+    'BLANK',
+    np.random.choice(
+        [
+            'YOU_AND_SPOUSE',
+            'YOU_AND_SPOUSE_AND_RESIDENT_RELATIVES'
+        ],
+        num_policies)
+    )
 
 dict_policies = {
     'policy_id': 'SERIAL',
@@ -47,7 +57,7 @@ dict_policies = {
         dict_ratingplan['territory_assignment']._zipcode.unique(),
     'homeowner': 'YN',
     'homeowner_at_init': 'YN',
-    'vehicle_count_at_init': 'YN',
+    'vehicle_count_at_init': (1, 4),
     'tenure': np.random.randint(0, 120),
     'prior_insurance_code': 'ABC',
     'prior_insurance_level': 'ABCDE',
@@ -68,12 +78,18 @@ dict_policies = {
     'nb_five_year_accident_free_discount': 'YN',
     'five_year_claim_free_discount': 'YN',
     'three_year_safe_driving_discount': 'YN',
-    'BI_limit': ['10/10', '15/30', '25/50', '50/100', '100/300', '250/500'],
+    'BI_limit': ['15/30', '25/50', '50/100', '100/300', '250/500'],
     'limitation_on_lawsuits': ['LIMITED', 'FULL'],
     'PD_limit': [5, 10, 25, 50, 100],
     'PIP_limit': [15, 50, 75, 150, 250, 'NONE'],
-    'PIP_deductible': [250, 500, 1000, 2000, 2500, 'NONE'],
-    'coverage_group': ['PRIMARY', 'SECONDARY', 'NONE'],
+    'PIP_deductible': [250, 500, 1000, 2000, 2500],
+    'PIP_coverage_group': ['PRIMARY', 'SECONDARY'],
+    'fpb_coverage_group': fpb_coverage_group,
+    'EXTMED_limit': [0, 1000, 10000],
+    'ESSSRV_limit': ['12/4380', '12/8760', '20/14600', '0/0'],
+    'DEATH_limit': ['BASE', 10, 'NONE'],
+    'FUNERAL_limit': funeral_limit,
+    'IL_limit': il_limit,
     'UMUIM_limit': ['15/30', '25/50', '50/100', '100/300', '250/500'],
     'UMPD_limit': [5, 10, 25, 50, 100]
 }
@@ -155,7 +171,7 @@ dict_vehicles = {
     'model': df_vehicle_sample['_model'],
     'style': df_vehicle_sample['_style'],
     'vehicle_age': (2022 - df_vehicle_sample['model_year']).clip(0),
-    'vehicle_risk_group_at_init': 'YN',
+    'vehicle_risk_group_at_init': ['A1', 'B1', 'C1', 'D1', 'E1'],
     'recovery_device_type': [
         'ALARM_ONLY',
         'NON_PASSIVE_ALARM',
@@ -168,41 +184,22 @@ dict_vehicles = {
     'full_coverage_on_vehicle': 'YN',
     'business_use': 'N',
     'full_coverage_code': 'ASN',
-    'full_coverage_at_init': 'ASN'
+    'full_coverage_at_init': 'ASN',
     'LOAN_limit': ['Y', 'NONE'],
     'RENT_limit': ['30/900', '40/1200', '50/1500', 'NONE'],
     'ROAD_limit': ['Y', 'NONE'],
     'ACPE_limit': (0, 4000),
-    'EXTMED_limit': [0, 1000, 10000],
-    'ESSSRV_limit': ['12/4380', '12/8760', '20/14600', '0/0'],
-    'DEATH_limit': ['BASE', 10, 'NONE'],
-    'FUNERAL_limit': [1, 2, 'NONE'],
-    'funeral_coverage_group': dict_ratingplan['IL_limit_factor']._IL_limit.unique(),
-    'IL_limit': ['BLANK', 'YOU_AND_SPOUSE', 'YOU_AND_SPOUSE_AND_RESIDENT_RELATIVES'],
     'COMP_deductible': dict_ratingplan['COMP_deductible_factor']._COMP_deductible.unique(),
     'COLL_deductible': [100, 150, 250, 500, 750, 1000, 1500, 2000, 9999]
 }
 df_vehicles = make_market_basket(dict_vehicles, num_vehicles)
 
+# create the market basket with 3 dataframes
+nj06_market_basket = SearchableDict(
+    policies = df_policies,
+    drivers = df_drivers,
+    vehicles = df_vehicles
+)
 
-
-# df = make_random_market_basket(nj06, 10)
-
-
-# df
-
-# set(df.columns) - (set(df_policies.columns) | set(df_drivers.columns) | set(df_vehicles.columns))
-
-
-# if dict_ratingplan['base_rates'].reset_index([]).inputs:
-#     print('hello')
-
-# arrays = [[1, 1, 2, 2, 3, 3], ['red', 'blue', 'red', 'blue', 'red', 'red'], list('123456')]
-# idx = pd.MultiIndex.from_arrays(arrays, names=('number', 'color', 'rand'))
-# testdf = pd.DataFrame(index = idx)
-
-# testdf.reset_index('rand', drop = True).drop_duplicates()
-
-# # idx.droplevel(['b']).drop_duplicates()
-
-# # idx.drop
+# OR simply:
+# df = make_random_market_basket(nj06, 1000)

@@ -113,5 +113,4 @@ def test_autojoin_inner(portfolio_simple_indexed):
     # L0004 does not have any claims, and should have       0 row
     #   since this is an inner join
     # For a total of 13 rows
-    print(joined.index)
     assert len(joined) == 12

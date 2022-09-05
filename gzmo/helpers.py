@@ -26,7 +26,8 @@ def set_unique_index(df: pd.DataFrame, max_cols):
                         .reset_index(level = lvls_to_ignore) \
                         .index
                 if test_idx.is_unique:
-                    df.set_index(test_idx, inplace = True)
+                    df = df.drop(list(sample_idx), axis = 1)
+                    df = df.set_index(test_idx)
                     return df
     msg = f'Unable to find unique index among columns {",".join(lst_cols)}'
     raise Exception(msg)

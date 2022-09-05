@@ -92,10 +92,10 @@ def process_rating_table(df, wildcard_characters = None) -> pd.DataFrame:
         df.index = pd.MultiIndex.from_arrays(new_indices)
     
     # subset on output columns only
-    if len(outputs) > 0:
-        # rename the columns
-        df = df.rename(columns = {f'{c}_': c for c in outputs})
-        df = df.loc[:, outputs]
+    # if len(outputs) > 0:
+    # rename the columns
+    df = df.rename(columns = {f'{c}_': c for c in outputs})
+    df = df.loc[:, outputs]
 
     return df, inputs, outputs
 

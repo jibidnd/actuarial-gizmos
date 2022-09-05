@@ -13,9 +13,9 @@ class DotDict(dict):
             # Raise an error
             raise AttributeError(f'Attribute {key} does not exist.')
     
-    def __setattr__(self, key, value):
-        self[key] = value
-        return
+    # def __setattr__(self, key, value):
+    #     self[key] = value
+    #     return
 
 class FancyDict(DotDict):
     """A dictionary-like class that allow attribute access.
@@ -70,10 +70,12 @@ class SearchableDict(FancyDict):
     cause the dataframe to have a non-unique index if the user does not
     manually index the dataframe with uniquely identifying rows.
     """    
-    def __init__(self, **kwargs):
+    def __init__(self, joinable_indices = True, **kwargs):
         super().__init__(**copy.deepcopy(kwargs))
         self.set_unique_indices()
-        self.set_joinable_indices()
+        self.joinable_indices = joinable_indices
+        if self.joinable_indices:
+            self.set_joinable_indices()
     
     # def __getattr__(self, name: str):
     #     if (ret := self.get(name)) is not None:
@@ -90,8 +92,9 @@ class SearchableDict(FancyDict):
     def register(self, **kwargs):
         # updates and checks index relationships
         super().update(kwargs)
-        self.set_joinable_indices()
         self.set_unique_indices()
+        if self.joinable_indices:
+            self.set_joinable_indices()
 
     def set_joinable_indices(self):
         # this is to check that if a column is used as an index
@@ -100,34 +103,33 @@ class SearchableDict(FancyDict):
 
         # first get all the names
         all_names = dict()
-        for v in self.values():
-            if isinstance(v, pd.DataFrame):
-                all_names.update({idx: 0 for idx in v.index.names})
-                all_names.update({c: 0 for c in v.columns})
+        dataframes = [v for v in self.values() if isinstance(v, pd.DataFrame)]
+        for v in dataframes:
+            all_names.update({idx: 0 for idx in v.index.names})
+            all_names.update({c: 0 for c in v.columns})
         
         # then count how many dataframes they appear in
         for name in all_names:
-            for v in self.values():
-                if isinstance(v, pd.DataFrame):
-                    df_names = set(v.index.names) | set(v.columns)
-                    if name in df_names:
-                        all_names[name] += 1
+            for v in dataframes:
+                df_names = set(v.index.names) | set(v.columns)
+                if name in df_names:
+                    all_names[name] += 1
         
         # for anything that exist in >1 dataframes,
         # set it an index for all dataframes
         lst_idx = [name for name, count in all_names.items() if count > 1]
-        for v in self.values():
-            if isinstance(v, pd.DataFrame):
-                add_to_idx = [
-                    c for c in v.columns
-                    if c in lst_idx
-                    if c not in v.index.names
-                    ]
-                v.set_index(add_to_idx, append = True, inplace = True)
-                # drop an index if it doesn't have a name
-                lvls_to_drop = \
-                    [i for i, name in enumerate(v.index.names) if name is None]
-                v.reset_index(level = lvls_to_drop, drop = True, inplace = True)
+        for v in dataframes:
+            add_to_idx = [
+                c for c in v.columns
+                if c in lst_idx
+                if c not in v.index.names
+                ]
+            v.set_index(add_to_idx, append = True, inplace = True)
+                
+            # drop an index if it doesn't have a name
+            lvls_to_drop = \
+                [i for i, name in enumerate(v.index.names) if name is None]
+            v.reset_index(level = lvls_to_drop, drop = True, inplace = True)
 
     def set_unique_indices(self, max_cols = 5):
         # for each data frame
@@ -135,6 +137,7 @@ class SearchableDict(FancyDict):
         #       test all combinations up to `max_cols`
         #       to see if we can create a unique index
         for k, v in self.items():
+            
             if isinstance(v, pd.DataFrame):
                 if not ((v.index.is_unique) & (v.index.names != [None])):
                     try:
@@ -148,26 +151,27 @@ class SearchableDict(FancyDict):
     def get(self, key, default = None, how = 'left', raise_ = True):
         
         # searching for a single key should land here
-        try:
-            # First see if there is an info matching the name
-            if (ret := super().get(key)) is not None:
-                return ret
-            # Then try to loop through each info to see if we
-            # get anything directly
-            for k, v in self.items():
-                # allow index to be searchable too
-                if isinstance(v, pd.DataFrame):
-                    idx_columns = v.index.to_frame()
-                    keep = idx_columns.columns.difference(v.columns)
-                    idx_columns = idx_columns[keep]
-                    to_search = pd.concat([v, idx_columns], axis = 1)
-                else:
-                    to_search = v
-
+        # First see if there is an info matching the name
+        if (ret := super().get(key)) is not None:
+            return ret
+        # Then try to loop through each info to see if we
+        # get anything directly
+        for k, v in self.items():
+            # allow index to be searchable too
+            if isinstance(v, pd.DataFrame):
+                idx_columns = v.index.to_frame()
+                keep = idx_columns.columns.difference(v.columns)
+                idx_columns = idx_columns[keep]
+                to_search = pd.concat([v, idx_columns], axis = 1)
+            else:
+                to_search = v
+            try:
                 if (ret := to_search.get(key)) is not None:
                     return ret
-        except TypeError:
-            pass
+            except (TypeError, AttributeError):
+                pass
+            except:
+                raise
         
         # if the key is a single string,
         # getting here means we can't find it
@@ -201,7 +205,12 @@ class SearchableDict(FancyDict):
             # If nothing is requested, simply return the indices
             # of the first dataframe
             if len(unique_keys) == 0:
-                return next(iter(self.values())).get([])
+                for v in self.values():
+                    try:
+                        return v.get([])
+                    except StopIteration:
+                        pass
+                return
 
             for k in unique_keys:
                 if (item_to_join := self.get(k)) is None:
@@ -213,9 +222,20 @@ class SearchableDict(FancyDict):
                 else:
                     if joined is None:
                         # TODO: allow non-dataframe objects (e.g. defaults, arrays)
-                        joined = item_to_join.to_frame()
+                        if isinstance(item_to_join, pd.Series):
+                            joined = item_to_join.to_frame(k)
+                        elif isinstance(item_to_join, pd.DataFrame):
+                            joined = item_to_join
+                        else:
+                            raise NotImplementedError
                     else:
-                        joined = joined.join(item_to_join, how = how)
+                        if isinstance(item_to_join, pd.Series):
+                            joined = joined.join(item_to_join.rename(k), how = how)
+                        elif isinstance(item_to_join, pd.DataFrame):
+                            joined = joined.join(item_to_join, how = how)
+                        else:
+                            raise NotImplementedError
+                            
                     new_indices = [
                         idx for idx in joined.index.names
                         if idx not in processed_indices
@@ -234,10 +254,11 @@ class AccessLogger:
         path of access from the root object.
     """    
     
-    def __init__(self, accessed = None, root = None, recursive = False):
+    def __init__(self, accessed = None, root = None, depth = 1):
         self.accessed = accessed or set()
         self.root = root or tuple()
-        self.recursive = recursive
+        self.depth = depth
+        self.current_depth = 0
     
     def __getattr__(self, key: str):
         return self.get(key)
@@ -258,6 +279,21 @@ class AccessLogger:
         return self
     
     # overload the operators user can add/subtract/multiply/etc the logger
+    def __eq__(self, other):
+        return True
+    
+    def __ge__(self, other):
+        return True
+    
+    def __gt__(self, other):
+        return True
+    
+    def __le__(self, other):
+        return False
+    
+    def __lt__(self, other):
+        return False
+
     def __add__(self, other):
         return self
     
@@ -295,25 +331,41 @@ class AccessLogger:
         return self
     
     def __invert__(self):
-        print(self)
+        return self
+    
+    def __iter__(self):
+        return self
+    
+    def __next__(self):
         return self
 
+
     def get(self, key: list or str = None):
-        # complete path to current item
-        if isinstance(key, list):
-            paths_to_current = [self.root + (key_i, ) for key_i in key]
-            path_to_current = self.root + (str(key), )
-            # add full paths to "accessed" list
-            self.accessed |= {*paths_to_current}
-        else:
-            # If this is a pandas dataframe operation, don't log it
-            if hasattr(pd.DataFrame, key) or hasattr(pd.Series, key):
+        # Only log an access if the current depth is < self.depth
+        if len(self.root) < self.depth:
+            if isinstance(key, AccessLogger):
                 return self
-            path_to_current = self.root + (key,)
-            # add full path to "accessed" list
-            self.accessed |= {path_to_current}
-            # return an AccessLogger object with reference to the original list
-        if self.recursive:
+            elif isinstance(key, list):
+                paths_to_current = [self.root + (key_i, ) for key_i in key]
+                # complete path to current item
+                path_to_current = self.root + (str(key), )
+                # add full paths to "accessed" list
+                self.accessed |= {*paths_to_current}
+            else:
+                # If this is a pandas dataframe operation, don't log it
+                if hasattr(pd.DataFrame, key) or hasattr(pd.Series, key):
+                    return self
+                # complete path to current item
+                path_to_current = self.root + (key,)
+                # add full path to "accessed" list
+                self.accessed |= {path_to_current}
+                # return an AccessLogger object with reference to the original list
+            
+            # return an access logger for any further attributes
             return AccessLogger(self.accessed, path_to_current)
+
+        # Still have to faciliate the rest of the function
+        #   even if past the sepcified depth though, to let the
+        #   function finish smoothly.
         else:
-            return AccessLogger()
+            return self

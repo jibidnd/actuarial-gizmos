@@ -1,10 +1,10 @@
 from abc import ABC
-from distutils.log import warn
 import warnings
 import traceback
 import graphlib
 import multiprocessing as mp
 import queue
+from functools import partialmethod
 
 import pandas as pd
 import numpy as np
@@ -44,7 +44,18 @@ class RatingPlan(FancyDict):
 
     def read_excel(self, io: str, *args, **kwargs):
         # read excel tables
-        excel_file = pd.read_excel(io, sheet_name = None, *args, **kwargs)
+        # Need to make sure sheet_name is either None or a list,
+        # to make sure a dict is returned by pd.read_excel
+        if (sheet_name := kwargs.pop('sheet_name', None)) is not None:
+            if not isinstance(sheet_name, list):
+                sheet_name = [sheet_name]
+        excel_file = pd.read_excel(
+            io,
+            sheet_name = sheet_name,
+            na_filter = False, # no "missing" values are allowed
+            *args,
+            **kwargs
+            )
         self.register_unprocessed_dataframes(**excel_file)
         # for table_name, table in excel_file.items():
         #     rating_table = LookupRatingTable.from_unprocessed_table(table)
@@ -61,27 +72,31 @@ class RatingPlan(FancyDict):
                 }
             dependencies[name_i] = upstream
         dag = graphlib.TopologicalSorter(dependencies)
-        
         return dag
 
     def rate(self, book: SearchableDict, parallel = True):
 
         # Initialize FancyDict to store results
         session = SearchableDict()
-        rating_results = SearchableDict()
+        # rating_results will have a lot of attributes overlapping columns
+        #   so we don't want these to be indices to be joined on.
+        #   They will already have the appropriate index
+        rating_results = SearchableDict(joinable_indices = False)
         # we want to search the rating results first
         # so we register that first
         session.register(**{
             'rating_results': rating_results,
             'book': book
         })
-        
-        if parallel:
-            self._rate_parallel(session)
-        else:
-            self._rate_sequential(session)
-        
-        return session
+        try:
+            if parallel:
+                self._rate_parallel(session)
+            else:
+                self._rate_sequential(session)
+        except:
+            raise
+        finally:
+            return session
 
     # each worker will take rating steps from the queue to work on
     def _worker(self, queue_to_process, queue_results):
@@ -97,14 +112,14 @@ class RatingPlan(FancyDict):
             try:
                 rating_step_result = rating_step.evaluate(session)
             except Exception as e:
+                full_traceback = traceback.format_exc()
                 # let the main process know if there is an error
-                queue_results.put((rating_step_name, e))
+                queue_results.put((rating_step_name, (e, full_traceback)))
             else:
                 # put the results in the results queue
                 queue_results.put((rating_step_name, rating_step_result))
                 # signal that this task is completed
                 queue_to_process.task_done()
-            
 
 
     def _rate_parallel(self, session):
@@ -146,13 +161,19 @@ class RatingPlan(FancyDict):
                     rating_step_name, rating_step_result = \
                         queue_results.get(timeout = 1)
                     if isinstance(rating_step_result, Exception):
-                        e = rating_step_result
+                        e, full_traceback = rating_step_result
                         runtime_error = \
                             RuntimeError(f'Error when evaluating {rating_step_name}')
-                        e.__cause__ = runtime_error
-                        traceback.print_exception(type(e), e, e.__traceback__)
+                        traceback.print_exception(
+                            type(runtime_error),
+                            runtime_error,
+                            runtime_error.__traceback__
+                            )
                         pool.terminate()
                         pool.join()
+                        print(full_traceback)
+                        raise e
+                        # traceback.print_exception(type(e), e, e.__traceback__)
                         return
                     else:
                         session.rating_results.register(
@@ -179,8 +200,8 @@ class RatingPlan(FancyDict):
 
 class RatingStep:
 
-    def __init__(self, eval_func = None, inputs = None, outputs = None) -> None:
-        super().__init__()
+    def __init__(self, eval_func = None, inputs = None, outputs = None, **kwargs) -> None:
+        # super().__init__()
         # if no inputs are passed, try to get it from eval_func
         if inputs:
             self.inputs = inputs
@@ -189,7 +210,7 @@ class RatingStep:
                 self.inputs = self.auto_get_inputs(eval_func)
             except:
                 warnings.warn(
-                    'Unable to auto-get inputs for rating step.' + \
+                    'Unable to auto-get inputs for rating step. ' + \
                     'Assuming empty input list'
                     )
                 self.inputs = []
@@ -201,7 +222,14 @@ class RatingStep:
     @staticmethod
     def auto_get_inputs(eval_func):
             access_logger = AccessLogger()
-            _ = eval_func(access_logger)
+            # probably a bad practice, but this catch all
+            # try-except block will allow us to get *something*
+            # if the function call breaks in the middle
+            # Example: if there is an unpacking action
+            try:
+                _ = eval_func(access_logger)
+            except:
+                pass
             accessed = [path[-1] for path in access_logger.accessed]
             return accessed
     
@@ -260,7 +288,8 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
                 attached to the rating table. Defaults to None.
         """
         pd.DataFrame.__init__(self, data = data.copy(), **kwargs)
-        RatingStep.__init__(self, inputs = inputs, outputs = outputs, **kwargs)
+        RatingStep.__init__(self, eval_func = self.evaluate, \
+            inputs = inputs, outputs = outputs, **kwargs)
         
         # information about the rating table
         self.wildcard_characters = \
@@ -272,7 +301,16 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
         self.company_tracking_number = company_tracking_number
         # any additional information to attach to the table
         self.additional_info = additional_info or {}
-
+        
+        # don't allow mixed type indices
+        if isinstance(self.index, pd.MultiIndex):
+            for lvl in self.index.levels:
+                if lvl.dtype == 'O':
+                    self.index = \
+                        self.index.set_levels(lvl.astype(str), level = lvl.name)
+        else:
+            if self.index.dtype == 'O':
+                self.index = self.index.astype(str)
 
         # Keep a marker of whether a row has any wildcards
         # For intervals, (-inf, inf) or (*, *) are treated as wildcards
@@ -282,9 +320,6 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
             )
 
         self._check_requirements()
-
-        return        
-        
 
     # to retain subclasses through pandas data manipulations
     # https://pandas.pydata.org/docs/development/extending.html
@@ -333,12 +368,59 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
     def outputs(self, value):
         pass
 
+    # override pd.DataFrame's operations
+    def add(self, *args, **kwargs):
+        kwargs.update(fill_value = 0)
+        return super().add(*args, **kwargs)
+
+    def __add__(self, other):
+        return self.add(other = other)
+
+    def sub(self, *args, **kwargs):
+        kwargs.update(fill_value = 0)
+        return super().sub(*args, **kwargs)
+
+    def __sub__(self, other):
+        return self.sub(other = other)
+
+    def mul(self, *args, **kwargs):
+        kwargs.update(fill_value = 1)
+        return super().mul(*args, **kwargs)
+
+    def __mul__(self, other):
+        return self.mul(other = other)
+
+    def div(self, *args, **kwargs):
+        kwargs.update(fill_value = 1)
+        return super().div(*args, **kwargs)
+
+    def __div__(self, other):
+        return self.div(other = other)
+
+    def truediv(self, *args, **kwargs):
+        return self.div(*args, **kwargs)
+    
+    def mod(self, *args, **kwargs):
+        kwargs.update(fill_value = 1)
+        return super().div(*args, **kwargs)
+
+    def __mod__(self, other):
+        return self.mod(other = other)
+    
+    def pow(self, *args, **kwargs):
+        kwargs.update(fill_value = 1)
+        return super().pow(*args, **kwargs)
+
+    def __mod__(self, other):
+        return self.pow(other = other)
+
+
     # TODO: use typing.overload for type hinting
     def evaluate(self, *args, **kwargs):
         # calls different methods based on input type.
         if args:
             if isinstance(args[0], (pd.DataFrame, FancyDict)):
-                if (inputs := args[0].get(self.inputs)) is None:
+                if (inputs := args[0].get(self.inputs).copy()) is None:
                     raise RuntimeError(f'Unable to get inputs.')
                 else:
                     return self._eval_table(inputs)
@@ -377,14 +459,6 @@ class LookupRatingTable(BaseRatingTable):
             assert len(self) == 1, \
                 f'Table has no inputs but has more than 1 row.'
             empty_dataframe = pd.DataFrame(index = input_table.index)
-            # ret = empty_dataframe \
-            #     .assign(temp_join_key = 1) \
-            #     .merge(
-            #         self.assign(temp_join_key = 1),
-            #         on = 'temp_join_key',
-            #         how = 'left'
-            #         ) \
-            #     .drop('temp_join_key', axis = 1)
             ret = empty_dataframe \
                 .merge(
                     self,
@@ -394,13 +468,19 @@ class LookupRatingTable(BaseRatingTable):
             ret.index = input_table.index
             return ret
 
-
+        # We don't allow mixed types--if an input is mixed-typed, it is a string
+        #   (See BaseRatingTable.__init__)
+        # Cast the input table's column to string type if so
+        for i in self.inputs:
+            if self.index.get_level_values(i).dtype == 'O':
+                input_table.loc[:, i] = input_table[i].astype(str).values
         # first use _eval_reindex on non-wildcard rows of self
         lookup_table_nonwildcard = self.loc[(~self._wildcard_markers).values]
         # need to remove the unused levels becuase they somehow mess up reindexing
         # See https://pandas.pydata.org/docs/user_guide/advanced.html#defined-levels
-        lookup_table_nonwildcard.index = \
-            lookup_table_nonwildcard.index.remove_unused_levels()
+        if isinstance(lookup_table_nonwildcard.index, pd.MultiIndex):
+            lookup_table_nonwildcard.index= \
+                lookup_table_nonwildcard.index.remove_unused_levels()
         try:
             res_nonwildcard = self._eval_reindex(
                 input_table, lookup_table = lookup_table_nonwildcard)
@@ -414,10 +494,13 @@ class LookupRatingTable(BaseRatingTable):
             lookup_table_wildcard = self.loc[self._wildcard_markers]
             isna = res_nonwildcard.isna().all(axis = 1)
             to_lookup = input_table.loc[isna]
-            res_wildcard = self._eval_match(
-                to_lookup, lookup_table = lookup_table_wildcard)
-            # combine res_nonwildcard and res_wildcard
-            res = res_nonwildcard.fillna(res_wildcard)
+            if (len(to_lookup) > 0) and (len(lookup_table_wildcard) > 0):
+                res_wildcard = self._eval_match(
+                    to_lookup, lookup_table = lookup_table_wildcard)
+                # combine res_nonwildcard and res_wildcard
+                res = res_nonwildcard.fillna(res_wildcard)
+            else:
+                res = res_nonwildcard
             # res = pd.concat([res_nonwildcard, res_wildcard], axis = 0, ignore_index = False)
             # reorder to original index
             res = res.loc[input_table.index]
@@ -442,6 +525,15 @@ class LookupRatingTable(BaseRatingTable):
                 is unique. If there are rows with overlapping intervals,
                 may raise:
                 `ValueError: setting an array element with a sequence.`
+        
+        NOTE:
+                There is currently a bug on this:
+                https://github.com/pandas-dev/pandas/issues/46699
+                Right now if this error occurs, _eval_table should reroute the
+                call to _eval_match, which is more robust but slower.
+                Obviously this only happens if _eval_reindex is called
+                within _eval_table.
+                
         """
 
         # reorder input columns
@@ -450,7 +542,6 @@ class LookupRatingTable(BaseRatingTable):
         # Define the lookup table
         if lookup_table is None:
             lookup_table = self
-
         # perform the lookup
         inputs = passed_inputs.to_records(index = False).tolist()
         results = lookup_table.reindex(
@@ -458,7 +549,10 @@ class LookupRatingTable(BaseRatingTable):
         # use the inputs' index
         # We also want to create a new dataframe, otherwise the resulting
         # object would be a RatingTable instance.
-        results = pd.DataFrame(results, index = passed_inputs.index)
+        results = pd.DataFrame(
+            results.to_dict('list'),    # need to drop the original index
+            index = passed_inputs.index
+            )
         return results
 
     def _eval_match(self, input_table, lookup_table = None):
@@ -482,7 +576,8 @@ class LookupRatingTable(BaseRatingTable):
                 lookup_table = lookup_table, **row.to_dict()
                 ),
             axis = 1
-            ).tolist()
+            )
+        records = records.tolist()
         # keep original index
         result = pd.DataFrame.from_records(records, index = input_table.index)
         
@@ -508,7 +603,7 @@ class LookupRatingTable(BaseRatingTable):
         if lookup_table is None:
             lookup_table = self
 
-        # if there ar eno inputs, simply return the (first) row
+        # if there are no inputs, simply return the (first) row
         if self.inputs == []:
             return lookup_table.iloc[0].to_dict()
 
@@ -535,7 +630,7 @@ class LookupRatingTable(BaseRatingTable):
         matching_rows_filter = np.all(matches, axis = 0)
         matching_rows = lookup_table.loc[matching_rows_filter]
         if len(matching_rows) == 0:
-            return {k: None for k in self.inputs}
+            return {k: None for k in self.outputs}
         else:
             return matching_rows.iloc[0].to_dict()
 
@@ -555,8 +650,11 @@ class InterpolatedRatingTable(BaseRatingTable):
         outputs = rating_table.outputs
         rating_table.index = pd.Index(rating_table.index.get_level_values(0))
         ret = cls(rating_table, inputs, outputs)
-        # inherit other attributes
-        ret.__dict__.update(rating_table.__dict__)
+        # inherit metadata
+        ret.__dict__.update({
+            k: v for k, v in rating_table.__dict__.items()
+            if k in rating_table._metadata
+            })
         return ret
 
     def _check_requirements(self):
@@ -581,7 +679,6 @@ class InterpolatedRatingTable(BaseRatingTable):
         return lookup_table
 
     def _eval_table(self, input_table):
-
         # reorder input columns
         passed_inputs = input_table.loc[:, self.inputs]
 
