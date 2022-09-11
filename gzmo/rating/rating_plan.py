@@ -9,7 +9,7 @@ from functools import partialmethod
 import pandas as pd
 import numpy as np
 
-from gzmo.base import FancyDict, SearchableDict, AccessLogger
+from gzmo.base import FancyDF, FancyDict, SearchableDict, AccessLogger
 from gzmo.rating import helpers
 
 
@@ -49,12 +49,16 @@ class RatingPlan(FancyDict):
         if (sheet_name := kwargs.pop('sheet_name', None)) is not None:
             if not isinstance(sheet_name, list):
                 sheet_name = [sheet_name]
+        default_excel_args = {
+            'na_filter': False,
+            'true_values': ['TRUE', 'True', 'true'],
+            'false_values': ['FALSE', 'False', 'false'],
+            'sheet_name': sheet_name,
+        }
         excel_file = pd.read_excel(
             io,
-            sheet_name = sheet_name,
-            na_filter = False, # no "missing" values are allowed
             *args,
-            **kwargs
+            **{**default_excel_args, **kwargs}
             )
         self.register_unprocessed_dataframes(**excel_file)
         # for table_name, table in excel_file.items():
@@ -234,7 +238,7 @@ class RatingStep:
             return accessed
     
 
-class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
+class BaseRatingTable(FancyDF, RatingStep, ABC):
 
     # _metadata define properties that will be passed to manipulation results.
     # https://pandas.pydata.org/docs/development/extending.html
@@ -262,45 +266,20 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
             inputs: list,
             outputs: list,
             wildcard_characters = None,
-            version: str = None,
-            effective_date: str = None,
-            serff_filing_number: str = None,
-            state_tracking_number: str = None,
-            company_tracking_number: str = None,
-            additional_info: dict = None,
             **kwargs
             ) -> None:
         """Initializes a RatingTable instance.
 
         Args:
             name (str): The name of the rating table.
-            version (str, optional): A user-defined version number for
-                the rating table. Defaults to None.
-            effective_date (str, optional): The effective date of the
-                rating table. Defaults to None.
-            serff_filing_number (str, optional): The SERFF filing number
-                of the rating table. Defaults to None.
-            state_tracking_number (str, optional): The State Tracking Number
-                of the rating table. Defaults to None.
-            company_tracking_number (str, optional): The Company Tracking
-                Number of the rating table. Defaults to None.
-            additional_info (dict, optional): Any additional info to be
-                attached to the rating table. Defaults to None.
         """
-        pd.DataFrame.__init__(self, data = data.copy(), **kwargs)
+        FancyDF.__init__(self, data = data.copy(), **kwargs)
         RatingStep.__init__(self, eval_func = self.evaluate, \
             inputs = inputs, outputs = outputs, **kwargs)
         
         # information about the rating table
         self.wildcard_characters = \
             wildcard_characters or BaseRatingTable.default_wildcard_characters
-        self.version = version
-        self.effective_date = effective_date
-        self.serff_filing_number = serff_filing_number
-        self.state_tracking_number = state_tracking_number
-        self.company_tracking_number = company_tracking_number
-        # any additional information to attach to the table
-        self.additional_info = additional_info or {}
         
         # don't allow mixed type indices
         if isinstance(self.index, pd.MultiIndex):
@@ -368,52 +347,6 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
     def outputs(self, value):
         pass
 
-    # override pd.DataFrame's operations
-    def add(self, *args, **kwargs):
-        kwargs.update(fill_value = 0)
-        return super().add(*args, **kwargs)
-
-    def __add__(self, other):
-        return self.add(other = other)
-
-    def sub(self, *args, **kwargs):
-        kwargs.update(fill_value = 0)
-        return super().sub(*args, **kwargs)
-
-    def __sub__(self, other):
-        return self.sub(other = other)
-
-    def mul(self, *args, **kwargs):
-        kwargs.update(fill_value = 1)
-        return super().mul(*args, **kwargs)
-
-    def __mul__(self, other):
-        return self.mul(other = other)
-
-    def div(self, *args, **kwargs):
-        kwargs.update(fill_value = 1)
-        return super().div(*args, **kwargs)
-
-    def __div__(self, other):
-        return self.div(other = other)
-
-    def truediv(self, *args, **kwargs):
-        return self.div(*args, **kwargs)
-    
-    def mod(self, *args, **kwargs):
-        kwargs.update(fill_value = 1)
-        return super().div(*args, **kwargs)
-
-    def __mod__(self, other):
-        return self.mod(other = other)
-    
-    def pow(self, *args, **kwargs):
-        kwargs.update(fill_value = 1)
-        return super().pow(*args, **kwargs)
-
-    def __mod__(self, other):
-        return self.pow(other = other)
-
 
     # TODO: use typing.overload for type hinting
     def evaluate(self, *args, **kwargs):
@@ -433,7 +366,7 @@ class BaseRatingTable(pd.DataFrame, RatingStep, ABC):
     
     def _eval_table(self, input_table):
         lst_dictoutputs = input_table.apply(self._eval_single, axis = 1).tolist()
-        return pd.DataFrame.from_records(lst_dictoutputs)
+        return FancyDF.from_records(lst_dictoutputs)
     
     #TODO: why doesn't this work?
     # @abstractmethod
@@ -458,7 +391,7 @@ class LookupRatingTable(BaseRatingTable):
         if self.inputs == []:
             assert len(self) == 1, \
                 f'Table has no inputs but has more than 1 row.'
-            empty_dataframe = pd.DataFrame(index = input_table.index)
+            empty_dataframe = FancyDF(index = input_table.index)
             ret = empty_dataframe \
                 .merge(
                     self,
@@ -517,7 +450,7 @@ class LookupRatingTable(BaseRatingTable):
             lookup_table: The dataframe in which to lookup rows.
 
         Returns:
-            pd.DataFrame: Rows in `self` with index matching the inputs.
+            FancyDF: Rows in `self` with index matching the inputs.
         
         Raises:
             ValueError: pandas multiindices do not play well with overlapping
@@ -549,7 +482,7 @@ class LookupRatingTable(BaseRatingTable):
         # use the inputs' index
         # We also want to create a new dataframe, otherwise the resulting
         # object would be a RatingTable instance.
-        results = pd.DataFrame(
+        results = FancyDF(
             results.to_dict('list'),    # need to drop the original index
             index = passed_inputs.index
             )
@@ -579,7 +512,7 @@ class LookupRatingTable(BaseRatingTable):
             )
         records = records.tolist()
         # keep original index
-        result = pd.DataFrame.from_records(records, index = input_table.index)
+        result = FancyDF.from_records(records, index = input_table.index)
         
         return result
 
@@ -693,7 +626,7 @@ class InterpolatedRatingTable(BaseRatingTable):
         # use the inputs' index
         # We also want to create a new dataframe, otherwise the resulting
         # object would be a RatingTable instance.
-        results = pd.DataFrame(results)
+        results = FancyDF(results)
         results.index = passed_inputs.index
 
         return results

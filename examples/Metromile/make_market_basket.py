@@ -106,7 +106,7 @@ driver_ids = driver_policy_ids.groupby(driver_policy_ids).cumcount() + 1
 num_drivers = len(driver_policy_ids)
 
 # valid education/occupation combinations
-df_edu_occ_choices = dict_ratingplan['occupation_group'][
+df_edu_occ_choices = dict_ratingplan['occupation_group_assignment'][
     ['_employment_status', '_occupation_description']
     ].sample(num_drivers, replace = True)
 

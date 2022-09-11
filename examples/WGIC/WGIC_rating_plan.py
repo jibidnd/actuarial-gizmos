@@ -4,11 +4,9 @@ from gzmo.base import SearchableDict
 from gzmo.rating.rating_plan import RatingPlan, InterpolatedRatingTable, RatingStep
 
 
-# initialize an empty rating plan
-wgic_01 = RatingPlan()
 # read in excel tables
 # all tables are automatically added as lookup tables
-wgic_01.read_excel(r'examples/WGIC/WGIC_rating_manual.xlsx')
+wgic_01 = RatingPlan.from_excel(r'examples/WGIC/WGIC_rating_manual.xlsx')
 
 # Specify that Amount of Insurance factor should be interpolated
 wgic_01.register(
