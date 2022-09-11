@@ -1,9 +1,10 @@
 import copy
+import functools
 
 import pandas as pd
 
 from gzmo.helpers import set_unique_index
-
+# Add overloaded dataframe and have other things subclass from it.
 class DotDict(dict):
     
     def __getattr__(self, key):
@@ -369,3 +370,227 @@ class AccessLogger:
         #   function finish smoothly.
         else:
             return self
+
+class FancyDF(pd.DataFrame):
+    # to retain subclasses through pandas data manipulations
+    # https://pandas.pydata.org/docs/development/extending.html
+    # Also see https://github.com/pandas-dev/pandas/issues/19300
+    @property
+    def _constructor(self):
+        return FancyDF
+
+    @property
+    def _constructor_sliced(self):
+        return FancySeries
+    
+    def maintain_column_order(func):
+        @functools.wraps(func)
+        def decorated(self, other, *args, **kwargs):
+            if isinstance(other, pd.DataFrame):
+                cols = [*self.columns, *other.columns.difference(self.columns)]
+                return func(self, other, *args, **kwargs).loc[:, cols]
+            else:
+                return func(self, other, *args, **kwargs)
+        return decorated
+    
+    def align_index(func):
+        @functools.wraps(func)
+        def decorated(self, other, *args, **kwargs):
+            # pandas is not smart enough to align series
+            #   with dataframe columns
+            # See https://stackoverflow.com/questions/35714582/notimplementederror-fill-value-0-not-supported
+            if isinstance(other, pd.Series):
+                aligned, _ = other.align(self, axis = 0)
+                other_df = FancyDF(
+                    {k: aligned.values for k in self.columns},
+                    index = self.index
+                )
+                return func(self, other_df, *args, axis = 0, **kwargs)
+            else:
+                return func(self, other, *args, **kwargs)
+        return decorated
+
+
+    # override pd.DataFrame's operations
+    @align_index
+    @maintain_column_order
+    def add(self, other, *args, **kwargs):
+        kwargs.update(fill_value = 0)
+        return super().add(other, *args, **kwargs)
+
+    def __add__(self, other):
+        return self.add(other)
+
+    radd = add
+    __radd__ = __add__
+
+    @align_index
+    @maintain_column_order
+    def sub(self, other, *args, **kwargs):
+        kwargs.update(fill_value = 0)
+        return super().sub(other, *args, **kwargs)
+
+    def __sub__(self, other):
+        return self.sub(other)
+
+    rsub = sub
+    __rsub__ = __sub__
+
+    @align_index
+    @maintain_column_order
+    def mul(self, other, *args, **kwargs):
+        kwargs.update(fill_value = 1)
+        return super().mul(other, *args, **kwargs)
+
+    def __mul__(self, other):
+        return self.mul(other)
+
+    rmul = mul
+    __rmul__ = __mul__
+
+    @align_index
+    @maintain_column_order
+    def truediv(self, other, *args, **kwargs):
+        kwargs.update(fill_value = 1)
+        return super().div(other, *args, **kwargs)
+    
+    def __truediv__(self, other):
+        return self.div(other)
+
+    div = truediv
+    rdiv = truediv
+    __div__ = __truediv__
+    __rdiv__ = __truediv__
+    
+    truediv = div
+    
+    @align_index
+    @maintain_column_order
+    def mod(self, other, *args, **kwargs):
+        kwargs.update(fill_value = 1)
+        return super().div(other, *args, **kwargs)
+
+    def __mod__(self, other):
+        return self.mod(other)
+    
+    @align_index
+    @maintain_column_order
+    def pow(self, other, *args, **kwargs):
+        kwargs.update(fill_value = 1)
+        return super().pow(other, *args, **kwargs)
+
+    def __pow__(self, other):
+        return self.pow(other)
+
+class FancySeries(pd.Series):
+    # to retain subclasses through pandas data manipulations
+    # https://pandas.pydata.org/docs/development/extending.html
+    # Also see https://github.com/pandas-dev/pandas/issues/19300
+    @property
+    def _constructor(self):
+        return FancySeries
+    
+    @property
+    def _constructor_expanddim(self):
+        return FancyDF    
+
+    # override pd.Series's operations
+    def add(self, other, *args, **kwargs):
+        kwargs.update(fill_value = 0)
+        return super().add(other, *args, **kwargs)
+
+    def __add__(self, other):
+        if isinstance(other, pd.Series):
+            return self.add(other)
+        else:
+            return super().__add__(other)
+
+    radd = add
+    __radd__ = __add__
+
+    def sub(self, *args, **kwargs):
+        kwargs.update(fill_value = 0)
+        return super().sub(*args, **kwargs)
+
+    def __sub__(self, other):
+        if isinstance(other, pd.Series):
+            return self.sub(other)
+        else:
+            return super().__sub__(other)
+
+    rsub = sub
+    __rsub__ = __sub__
+
+    def mul(self, other, *args, **kwargs):
+        kwargs.update(fill_value = 1)
+        return super().mul(other, *args, **kwargs)
+
+    def __mul__(self, other):
+        if isinstance(other, pd.Series):
+            return self.mul(other)
+        else:
+            return super().__mul__(other)
+
+    rmul = mul
+    __rmul__ = __mul__
+
+    def truediv(self, *args, **kwargs):
+        kwargs.update(fill_value = 1)
+        return super().div(*args, **kwargs)
+
+    def __truediv__(self, other):
+        if isinstance(other, pd.Series):
+            return self.div(other)
+        else:
+            return super().__div__(other)
+
+    div = truediv
+    rdiv = truediv
+    __div__ = __truediv__
+    __rdiv__ = __truediv__
+
+    truediv = div 
+    
+    def mod(self, *args, **kwargs):
+        kwargs.update(fill_value = 1)
+        return super().div(*args, **kwargs)
+
+    def __mod__(self, other):
+        if isinstance(other, pd.Series):
+            return self.mod(other)
+        else:
+            return super().__mod__(other)
+    
+    def pow(self, *args, **kwargs):
+        kwargs.update(fill_value = 1)
+        return super().pow(*args, **kwargs)
+
+    def __pow__(self, other):
+        if isinstance(other, pd.Series):
+            return self.pow(other)
+        else:
+            return super().__pow__(other)
+
+# import pandas as pd
+# class MySeries(pd.Series):
+#     @property
+#     def _constructor(self):
+#         return MySeries
+
+#     def mul(self, other, *args, **kwargs):
+#         kwargs.update(fill_value = 1)
+#         return super().mul(other, *args, **kwargs)
+
+#     __mul__ = mul
+
+# type(MySeries([1,2,3]).mul(1))
+
+
+
+# class MyDF(pd.DataFrame):
+
+#     def __mul__(self, other):
+#         print('hello!')
+#         return super().mul(other)
+
+# MyDF({'a': [1,2,3]}) * 1

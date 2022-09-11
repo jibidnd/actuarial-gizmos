@@ -1,6 +1,6 @@
 import pandas as pd
 
-from gzmo.base import SearchableDict
+from gzmo.base import FancySeries, SearchableDict
 from gzmo.rating.rating_plan import RatingPlan, RatingStep, InterpolatedRatingTable
 
 from examples.Metromile.NJ_rating_plans.NJ_base import NJ_Base_RatingPlan
@@ -49,21 +49,3 @@ for k, v in session.rating_results.items():
         except:
             print(k)
             print(v)
-
-
-
-
-# (
-#     session.driver_classification_factor * \
-#     session.experienced_driver_factor + \
-#     session.driving_record_points_factor
-#     ) * \
-# session.household_member_factor * \
-# session.driver_age_point_factor * \
-# session.credit_clean_driver_factor
-
-
-# type(    session.driver_classification_factor * session.experienced_driver_factor)
-
-# session.driver_classification_factor * \
-# session.household_member_factor
