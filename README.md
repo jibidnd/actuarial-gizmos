@@ -3,7 +3,7 @@
 An easy-to-use yet flexible rating engine *builder*!
 
 ## What is it?
-**actuarial-gizmos** is a Python package that automates much of the rating engine building process. It's one main objective is:
+**actuarial-gizmos** is a Python package that automates much of the rating engine building process. Its one main objective is:
 - Easy to use
 
 You can build a rater in as little as 3 lines of code:
