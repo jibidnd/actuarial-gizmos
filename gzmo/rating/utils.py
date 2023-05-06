@@ -172,6 +172,11 @@ def make_random_market_basket(rating_plan, market_basket_size, seed = None):
         else:
             sample = \
                 pd.concat([sample, sampled], axis = 1)
+        
+    # finally add a unique index
+    c = sample.columns
+    sample['idx'] = sample.index
+    sample = sample.loc[:, ['idx'] + list(c)]
 
     # output dataset
     return sample
