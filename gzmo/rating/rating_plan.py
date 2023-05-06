@@ -560,7 +560,15 @@ class LookupRatingTable(BaseRatingTable):
                 )
             matches.append(matched)
         
-        matching_rows_filter = np.all(matches, axis = 0)
+        matching_rows_filter_w_wildcards = \
+            np.all(matches, axis = 0)
+        matching_rows_filter_wo_wildcards = \
+            matching_rows_filter_w_wildcards & ((~self._wildcard_markers).values)
+        if matching_rows_filter_wo_wildcards.sum() == 0:
+            matching_rows_filter = matching_rows_filter_w_wildcards
+        else:
+            matching_rows_filter = matching_rows_filter_wo_wildcards
+        
         matching_rows = lookup_table.loc[matching_rows_filter]
         if len(matching_rows) == 0:
             return {k: None for k in self.outputs}
