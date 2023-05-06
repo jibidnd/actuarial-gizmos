@@ -35,7 +35,18 @@ def make_random_market_basket(rating_plan, market_basket_size, seed = None):
             Defaults to None.
 
     Returns:
-        _type_: _description_
+        DataFrame: A DataFrame containing the generated market basket.
+
+    Example:
+        from gzmo.rating.rating_plan import RatingPlan
+        from gzmo.rating.utils import make_random_market_basket
+        
+        rating_plan = RatingPlan.from_excel(
+            r'examples/demo/demo_rate_manual.xlsx'
+        )
+
+        num_samples = 10000
+        random_mb = make_random_market_basket(rating_plan, num_samples)
     """
     disjoint_input_sets = []
 

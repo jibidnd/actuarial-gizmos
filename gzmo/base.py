@@ -4,9 +4,12 @@ import functools
 import pandas as pd
 
 from gzmo.helpers import set_unique_index
-# Add overloaded dataframe and have other things subclass from it.
 class DotDict(dict):
-    
+    """A dictionary that allows "dot" attribute access.
+
+    Args:
+        dict
+    """    
     def __getattr__(self, key):
         if (ret := self.get(key)) is not None:
             return ret
@@ -19,8 +22,7 @@ class DotDict(dict):
     #     return
 
 class FancyDict(DotDict):
-    """A dictionary-like class that allow attribute access.
-        Adding a class to allow a unified API.
+    """A dictionary-like class that allow accessing attributes in child items.s
     """
 
     def __init__(self, *args, **kwargs) -> None:
@@ -91,16 +93,20 @@ class SearchableDict(FancyDict):
             raise AttributeError(f'Cannot find {key} in info.')
 
     def register(self, **kwargs):
-        # updates and checks index relationships
+        """Overrides parent method to updates and checks index relationships.
+        """        
         super().update(kwargs)
         self.set_unique_indices()
         if self.joinable_indices:
             self.set_joinable_indices()
 
     def set_joinable_indices(self):
-        # this is to check that if a column is used as an index
-        # in any dataframe, it is used as an index everywhere else.
-        # This is such that joining can be done efficiently.
+        """Make sure that all dataframes are easily joinable.
+
+            This is to check that if a column is used as an index
+            in any dataframe, it is used as an index everywhere else.
+            This is such that joining can be done efficiently.
+        """        
 
         # first get all the names
         all_names = dict()
@@ -150,7 +156,26 @@ class SearchableDict(FancyDict):
                         raise
 
     def get(self, key, default = None, how = 'left', raise_ = True):
-        
+        """This allows easy access of attribute(s).
+
+        Args:
+            key (string or list): string or list of attributes to get.
+            default (optional): The default value to return of
+                no results are found. Defaults to None.
+            how (str, optional): How dataframes are joined if multiple
+                attributes requested are on different levels. Defaults to 'left'.
+            raise_ (bool, optional): Whether errors are raised. Defaults to True.
+
+        Raises:
+            AttributeError
+            AttributeError
+            AttributeError
+            NotImplementedError
+            NotImplementedError
+
+        Returns:
+            The requested attribute(s).
+        """        
         # searching for a single key should land here
         # First see if there is an info matching the name
         if (ret := super().get(key)) is not None:
@@ -372,6 +397,9 @@ class AccessLogger:
             return self
 
 class FancyDF(pd.DataFrame):
+    """To override some of panda's operations.
+    """
+
     # to retain subclasses through pandas data manipulations
     # https://pandas.pydata.org/docs/development/extending.html
     # Also see https://github.com/pandas-dev/pandas/issues/19300
@@ -483,6 +511,9 @@ class FancyDF(pd.DataFrame):
         return self.pow(other)
 
 class FancySeries(pd.Series):
+    """To override some of panda's operations.
+    """
+        
     # to retain subclasses through pandas data manipulations
     # https://pandas.pydata.org/docs/development/extending.html
     # Also see https://github.com/pandas-dev/pandas/issues/19300
@@ -570,27 +601,3 @@ class FancySeries(pd.Series):
             return self.pow(other)
         else:
             return super().__pow__(other)
-
-# import pandas as pd
-# class MySeries(pd.Series):
-#     @property
-#     def _constructor(self):
-#         return MySeries
-
-#     def mul(self, other, *args, **kwargs):
-#         kwargs.update(fill_value = 1)
-#         return super().mul(other, *args, **kwargs)
-
-#     __mul__ = mul
-
-# type(MySeries([1,2,3]).mul(1))
-
-
-
-# class MyDF(pd.DataFrame):
-
-#     def __mul__(self, other):
-#         print('hello!')
-#         return super().mul(other)
-
-# MyDF({'a': [1,2,3]}) * 1

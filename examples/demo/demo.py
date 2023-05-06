@@ -1,3 +1,7 @@
+# This file contains code for going through the read-me
+
+# Creating a rating plan from an excel file:
+# ===================================================================
 import pandas as pd
 from gzmo.rating.rating_plan import RatingPlan
 
@@ -12,15 +16,15 @@ for table_name, table in rating_plan.items():
         + f'and outputs {table.outputs}.\n'
     ))
 
-
+# Using a rating table:
+# ===================================================================
 print(rating_plan['credit_tier_placement'])
 
 rating_plan['credit_tier_placement'].evaluate({'credit_score': 795, 'pni_age': 25})
 
-rating_plan
-
+# Creating an interpolated rating table:
+# ===================================================================
 from gzmo.rating.rating_plan import InterpolatedRatingTable
-
 
 interpolated = InterpolatedRatingTable.from_rating_table(
     rating_plan.amount_of_insurance_factor
@@ -28,9 +32,12 @@ interpolated = InterpolatedRatingTable.from_rating_table(
 print(interpolated.head())
 print(interpolated.evaluate(87500))
 
+# Defining a custom rating step:
+# ===================================================================
 from gzmo.rating.rating_plan import RatingStep
 
 def get_daily_base_rate(session):
+    # the custom function can reference parameters of the session
     fixed_premium = (
         (
             session.total_premium
@@ -42,11 +49,15 @@ def get_daily_base_rate(session):
     daily_base_rate = daily_base_rate.clip(0.01)
     return daily_base_rate
 
+# Register the rating step in the rating plan
 rating_plan.register(daily_base_rate = RatingStep(get_daily_base_rate))
 
+# We can get the rating step's inputs like this:
 print(rating_plan['daily_base_rate'].inputs)
 
-# Order of rating tables from the inputs
+# The rating plan automatically sorts the rating steps based on inputs/outputs:
+# ===================================================================
+# The original order:
 print('Order of rating tables from inputs:')
 print(rating_plan.keys())
 
@@ -57,33 +68,42 @@ print(rating_plan.keys())
 dag = rating_plan.make_dag()
 print(list(dag.static_order()))
 
-# session = rating_plan.rate(policies, parallel = True)
 
-# example of parallel processing
+# We can also make a random market basket for testing:
+# ===================================================================
+# re-import the rating plan
+rating_plan = RatingPlan.from_excel(
+    r'examples/demo/demo_rate_manual.xlsx'
+    )
 
-rating_plan.pop('daily_base_rate')
-
-import time
 from gzmo.rating.utils import make_random_market_basket
-
-num_samples = 100000
+num_samples = 10000
 random_mb = make_random_market_basket(rating_plan, num_samples)
+# random_mb has all the attributes needed to rate the rating plan
+# See "Alternative way of creating a market basket" 
+#   for a more refined approach
 
+# Let's try running the rating plan!
+# ===================================================================
+import time
 t0 = time.perf_counter()
 session = rating_plan.rate(random_mb)
 t1 = time.perf_counter()
 
-# for name, item in session.items():
-#     print(name)
-#     print(item)
+for name, item in session.items():
+    print(name)
+    print(item)
 
 print(f'Running {num_samples:,.0f} records took {t1-t0:.0f} seconds.')
+# Running 10,000 records took 8 seconds.
 
-
+# Creating a reusable rating plan is easy:
+# ===================================================================
+# First create a base rating plan
 class Company_Base_Rating_Plan(RatingPlan):
     def __init__(self):
         super().__init__()
-        self.read_excel(...)
+        self.read_excel(r'examples/demo/demo_rate_manual.xlsx')
     
     @staticmethod
     def get_max_driver_age(session):
@@ -93,7 +113,7 @@ class Company_Base_Rating_Plan(RatingPlan):
     def calculate_vehicle_age(session):
         return session.effective_year - session.vehicles.model_year
 
-
+# Suppose we then want to revise the definition of vehicle age:
 class Company_Revised_Rating_Plan(Company_Base_Rating_Plan):
 
     # override a method to cap the vehicle age at 0 minimum
@@ -101,15 +121,13 @@ class Company_Revised_Rating_Plan(Company_Base_Rating_Plan):
     def calculate_vehicle_age(session):
         return max(0, session.effective_year - session.vehicles.model_year)
 
-from gzmo.rating.utils import make_random_market_basket
-
-random_mb = make_random_market_basket(rating_plan, 1000)
-print(random_mb.head())
-
-# import numpy as np
+# Alternative way of creating a market basket:
+# ===================================================================
+import numpy as np
 from gzmo.rating.utils import make_market_basket
 
 num_policies = 1000
+# Specify how variables are generated
 dict_policies = {
     # Pass 'SERIAL' for an auto-incrementing id
     'policy_id': 'SERIAL',
@@ -129,7 +147,7 @@ df_policies = make_market_basket(dict_policies, num_policies)
 
 print(df_policies)
 
-# Drvers
+# Drivers
 # =============================================================================
 # Each policy will get anywhere from 1 to 4 drivers
 num_drivers_per_policy = np.random.randint(1, 5, num_policies)
@@ -156,7 +174,6 @@ vehicle_ids = vehicle_policy_ids.groupby(vehicle_policy_ids).cumcount() + 1
 num_vehicles = len(vehicle_policy_ids)
 
 
-
 dict_vehicles = {
     'policy_id': vehicle_policy_ids,
     'vehicle_id': vehicle_ids,
@@ -179,7 +196,8 @@ print(df_drivers)
 print(df_vehicles)
 
 
-
+# SearchableDict allows easy access of variables:
+# =============================================================================
 from gzmo.base import SearchableDict
 
 market_basket = SearchableDict(

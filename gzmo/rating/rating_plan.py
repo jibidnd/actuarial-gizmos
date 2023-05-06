@@ -14,10 +14,22 @@ from gzmo.rating import helpers
 
 
 class RatingPlan(FancyDict):
-    """This class handles the initialization of a rating plan."""
+    """A `RatingPlan` consists of `RatingStep`s and coorinates them being run."""
+
+    # methods for initialization
+    # =================================================================
 
     @classmethod
     def from_unprocessed_dataframes(cls, dict_unprocessed_dataframes: dict):
+        """Creates a rating plan from an unprocessed dataframe
+
+        Args:
+            dict_unprocessed_dataframes (dict): A dictionary of dataframes
+                of rating tables
+
+        Returns:
+            A RatingPlan instance.
+        """        
         rating_plan = cls()
         rating_plan.register_unprocessed_dataframes(
             **dict_unprocessed_dataframes)
@@ -43,12 +55,17 @@ class RatingPlan(FancyDict):
             self.register(**{table_name: rating_table})
 
     def read_excel(self, io: str, *args, **kwargs):
-        # read excel tables
+        """Instance method to load in tables from an excel file
+
+        Args:
+            io (str): see pd.read_excel for documentation.
+        """        
         # Need to make sure sheet_name is either None or a list,
         # to make sure a dict is returned by pd.read_excel
         if (sheet_name := kwargs.pop('sheet_name', None)) is not None:
             if not isinstance(sheet_name, list):
                 sheet_name = [sheet_name]
+        # default arguments for parsing
         default_excel_args = {
             'na_filter': False,
             'true_values': ['TRUE', 'True', 'true'],
@@ -60,13 +77,19 @@ class RatingPlan(FancyDict):
             *args,
             **{**default_excel_args, **kwargs}
             )
+        # register the dataframes
         self.register_unprocessed_dataframes(**excel_file)
-        # for table_name, table in excel_file.items():
-        #     rating_table = LookupRatingTable.from_unprocessed_table(table)
-        #     self.register(**{table_name: rating_table})
         return
-
+    
+    # Methods for rating
+    # =================================================================
     def make_dag(self):
+        """Create a Directed Acyclic Graph (DAG) of rating steps
+            based on the inputs and outputs of each rating step.
+
+        Returns:
+            graphlib.TopologicalSorter
+        """        
         dependencies = {}
         for name_i, step_i in self.items():
             upstream = {
@@ -79,14 +102,23 @@ class RatingPlan(FancyDict):
         return dag
 
     def rate(self, book: SearchableDict, parallel = True):
+        """Run the RatingPlan on a `book`.
 
+        Args:
+            book (SearchableDict): A book containing attributes needed for rating.
+            parallel (bool, optional): Whether to use parallel processing
+                to run rating stpes. Defaults to True.
+
+        Returns:
+            session: a SearchableDict instance containing rating results.
+        """
         # Initialize FancyDict to store results
         session = SearchableDict()
-        # rating_results will have a lot of attributes overlapping columns
+        # rating_results will have a lot of attributes with overlapping columns
         #   so we don't want these to be indices to be joined on.
         #   They will already have the appropriate index
         rating_results = SearchableDict(joinable_indices = False)
-        # we want to search the rating results first
+        # We want to search the rating results first
         # so we register that first
         session.register(**{
             'rating_results': rating_results,
@@ -102,8 +134,15 @@ class RatingPlan(FancyDict):
         finally:
             return session
 
-    # each worker will take rating steps from the queue to work on
+    # For parallel rating
+    # -----------------------------------------------------------------
     def _worker(self, queue_to_process, queue_results):
+        """Each worker will take rating steps from the queue to work on.
+
+        Args:
+            queue_to_process (_type_): the queue of work (rating steps) to process.
+            queue_results (_type_): the results to be sent back to the session.
+        """        
         while True:
             # get work
             work = queue_to_process.get()  # blocks
@@ -127,7 +166,12 @@ class RatingPlan(FancyDict):
 
 
     def _rate_parallel(self, session):
+        """Run all rating steps in parallel
 
+        Args:
+            session (SearchableDict): A SearchableDict containing
+                the book to be rated and which will host the rating results.
+        """
         def handle_worker_exceptions(e):
             raise e
 
@@ -191,7 +235,8 @@ class RatingPlan(FancyDict):
             for _ in range(num_workers):
                 queue_to_process.put(None)
 
-
+    # Non-parallel (sequential) rating
+    # -----------------------------------------------------------------
     def _rate_sequential(self, session):
         # make dag
         dag = self.make_dag()
@@ -203,9 +248,24 @@ class RatingPlan(FancyDict):
                     )
 
 class RatingStep:
-
+    """`RatingStep`s compose the RatingPlan and include rating tables
+        as well as custom functions
+    """
     def __init__(self, eval_func = None, inputs = None, outputs = None, **kwargs) -> None:
-        # super().__init__()
+        """Initializes the `RatingStep`.
+
+        Args:
+            eval_func (function, optional): This is where a custom (Python)
+                rating function would go. Defaults to None.
+            inputs (list, optional): This is specified when called during BaseRatingTable
+                initialization. User may also manually specify inputs to the RatingStep for
+                custom rating fuctions. If none specified, will attempt to get inputs from the
+                eval_func. Defaults to None.
+            outputs (list, optional): This is specified when called during BaseRatingTable
+                initialization. User may also manually specify outputs to the RatingStep for
+                custom rating fuctions.
+                Defaults to None.
+        """        
         # if no inputs are passed, try to get it from eval_func
         if inputs:
             self.inputs = inputs
@@ -225,20 +285,30 @@ class RatingStep:
     
     @staticmethod
     def auto_get_inputs(eval_func):
-            access_logger = AccessLogger()
-            # probably a bad practice, but this catch all
-            # try-except block will allow us to get *something*
-            # if the function call breaks in the middle
-            # Example: if there is an unpacking action
-            try:
-                _ = eval_func(access_logger)
-            except:
-                pass
-            accessed = [path[-1] for path in access_logger.accessed]
-            return accessed
+        """A function to extract possible inputs used in a function.
+
+        Args:
+            eval_func (function): The function from which inputs are extracted.
+
+        Returns:
+            list: the list of possible inputs.
+        """            
+        access_logger = AccessLogger()
+        # probably a bad practice, but this catch all
+        # try-except block will allow us to get *something*
+        # if the function call breaks in the middle
+        # Example: if there is an unpacking action
+        try:
+            _ = eval_func(access_logger)
+        except:
+            pass
+        accessed = [path[-1] for path in access_logger.accessed]
+        return accessed
     
 
 class BaseRatingTable(FancyDF, RatingStep, ABC):
+    """This is the base class for rating tables.
+    """    
 
     # _metadata define properties that will be passed to manipulation results.
     # https://pandas.pydata.org/docs/development/extending.html
@@ -271,8 +341,14 @@ class BaseRatingTable(FancyDF, RatingStep, ABC):
         """Initializes a RatingTable instance.
 
         Args:
-            name (str): The name of the rating table.
-        """
+            data (pd.DataFrame): The rating table as a pandas.DataFrame.
+            inputs (list): The list of inputs
+            outputs (list): The list of outputs
+            wildcard_characters (list, optional): A list of characters
+                considered "wildcards". Defaults to None.
+        """        
+        
+        # Make a copy of the dataframe so we don't accidentally change it.
         FancyDF.__init__(self, data = data.copy(), **kwargs)
         RatingStep.__init__(self, eval_func = self.evaluate, \
             inputs = inputs, outputs = outputs, **kwargs)
@@ -281,7 +357,7 @@ class BaseRatingTable(FancyDF, RatingStep, ABC):
         self.wildcard_characters = \
             wildcard_characters or BaseRatingTable.default_wildcard_characters
         
-        # don't allow mixed type indices
+        # don't allow mixed type indices (cast to string if so)
         if isinstance(self.index, pd.MultiIndex):
             for lvl in self.index.levels:
                 if lvl.dtype == 'O':
@@ -350,7 +426,9 @@ class BaseRatingTable(FancyDF, RatingStep, ABC):
 
     # TODO: use typing.overload for type hinting
     def evaluate(self, *args, **kwargs):
-        # calls different methods based on input type.
+        """`evaluate` takes inputs and runs it through the rating table.
+            This method calls different methods based on input type.
+        """
         if args:
             if isinstance(args[0], (pd.DataFrame, FancyDict)):
                 if (inputs := args[0].get(self.inputs).copy()) is None:
@@ -365,16 +443,37 @@ class BaseRatingTable(FancyDF, RatingStep, ABC):
             return self._eval_single(**kwargs)
     
     def _eval_table(self, input_table):
+        """THIS IS INTENDED TO BE OVERRIDDEN BY SUBCLASSES.
+
+            This method takes an input table and return the corresponding
+                rows of the rating table.
+
+        Args:
+            input_table (DataFrame): The table containing input attributes.
+
+        Returns:
+            FancyDF: The results in a table
+        """        
         lst_dictoutputs = input_table.apply(self._eval_single, axis = 1).tolist()
         return FancyDF.from_records(lst_dictoutputs)
     
-    #TODO: why doesn't this work?
-    # @abstractmethod
     def _eval_single(self, *args, **kwargs):
+        """THIS IS INTENDED TO BE OVERRIDDEN BY SUBCLASSES.
+
+            Not sure why @abstractmethod breaks things.
+        """        
         pass
     
     @classmethod
     def from_unprocessed_table(cls, df, **kwargs):
+        """Parses an unprocessed table and gets its inputs and outputs.
+
+        Args:
+            df (DataFrame): The rating table.
+
+        Returns:
+            BaseRatingTable: a processed rating table.
+        """        
         processed_rating_table, inputs, outputs = \
             helpers.process_rating_table(df)
         return cls(processed_rating_table, inputs, outputs, **kwargs)
@@ -382,12 +481,22 @@ class BaseRatingTable(FancyDF, RatingStep, ABC):
 class LookupRatingTable(BaseRatingTable):
 
     def _eval_table(self, input_table):
-        # The function to handle dataframe inputs
-        # first do _eval_reindex on non-wildcard rows of self for all rows in input_table
-        # if fails, just fill in with None
-        # then do eval_match on wildcard rows on any rows that do not yet have a value
-        
-        # if there are no inputs, simply do a cross join
+        """Evaluates multiple rows of inputs.
+
+            The function handles dataframe inputs.
+            First do _eval_reindex on non-wildcard rows of self for all rows in input_table
+            if fails, just fill in with None
+            then do eval_match on wildcard rows on any rows that do not yet have a value
+
+        Args:
+            input_table (DataFrame): A table containing input attributes.
+
+        Returns:
+            DataFrame: The table containing the results.
+        """        
+
+        # if there are no inputs, do a cross join if the rating table
+        #   only has 1 row
         if self.inputs == []:
             assert len(self) == 1, \
                 f'Table has no inputs but has more than 1 row.'
@@ -489,7 +598,7 @@ class LookupRatingTable(BaseRatingTable):
         return results
 
     def _eval_match(self, input_table, lookup_table = None):
-        """Uses self._lookup to look up rows that match 
+        """Uses self._eval_single to look up rows that match 
             each row of inputs in input_table.
 
         Args:
@@ -517,7 +626,7 @@ class LookupRatingTable(BaseRatingTable):
         return result
 
     def _eval_single(self, *args, lookup_table = None, **kwargs):
-        """Function to handle a single (set of) input.
+        """Function to handle a single (set of) inputs.
         Pass one set of inputs to retrieve a mathching row as a dict.
 
         Args:
@@ -530,6 +639,12 @@ class LookupRatingTable(BaseRatingTable):
                 if any non-keyword arguments are passed.
         Returns:
             dict: {input name: output value}
+        
+        Example:
+            >>> self._eval_single('M', 38)
+            is equivalent to
+            >>> self._eval_single({'gender': 'M', 'age': 38})
+            if `self` has inputs `gender` and `age`.
         """
         
         # Define the lookup table
@@ -559,16 +674,18 @@ class LookupRatingTable(BaseRatingTable):
                     self.wildcard_characters + [passed_input]
                 )
             matches.append(matched)
-        
+
         matching_rows_filter_w_wildcards = \
             np.all(matches, axis = 0)
+        # this needs to get reindexed,
+        #   otherwise it is not subset to the lookup table's rows
+        wildcard_markers = lookup_table._wildcard_markers.loc[lookup_table.index]
         matching_rows_filter_wo_wildcards = \
-            matching_rows_filter_w_wildcards & ((~self._wildcard_markers).values)
+            matching_rows_filter_w_wildcards & wildcard_markers
         if matching_rows_filter_wo_wildcards.sum() == 0:
             matching_rows_filter = matching_rows_filter_w_wildcards
         else:
             matching_rows_filter = matching_rows_filter_wo_wildcards
-        
         matching_rows = lookup_table.loc[matching_rows_filter]
         if len(matching_rows) == 0:
             return {k: None for k in self.outputs}
@@ -576,7 +693,8 @@ class LookupRatingTable(BaseRatingTable):
             return matching_rows.iloc[0].to_dict()
 
 class InterpolatedRatingTable(BaseRatingTable):
-    
+    """A RatingTable that allows interpolation between rows."""
+
     def __init__(self, data, inputs, outputs, **kwargs) -> None:
         super().__init__(data, inputs, outputs, **kwargs)
         # flatten multiindex to single level index for interpolation
@@ -586,6 +704,14 @@ class InterpolatedRatingTable(BaseRatingTable):
 
     @classmethod
     def from_rating_table(cls, rating_table, **kwargs):
+        """Converts a rating table to an interpolated one.
+
+        Args:
+            rating_table (BaseRatingTable): The table to be converted.
+
+        Returns:
+            InterpolatedRatingTable: The converted table.
+        """        
         # initialize a new instance
         inputs = rating_table.inputs
         outputs = rating_table.outputs
@@ -599,7 +725,10 @@ class InterpolatedRatingTable(BaseRatingTable):
         return ret
 
     def _check_requirements(self):
-       
+        """Check the requirements for a interpolated table.
+
+        Table must have only 1 input and must have no wildcards.
+        """       
         super()._check_requirements()
 
         assert not self._wildcard_markers.any(), \
@@ -608,18 +737,41 @@ class InterpolatedRatingTable(BaseRatingTable):
             'Only tables with 1 input can be interpolated.'
 
     def make_lookup_table(self, passed_inputs):
+        """Interpolates the table for the passed inputs.
+
+        Args:
+            passed_inputs (list): the list of inputs that needs a
+                value in the rating table.
+
+        Returns:
+            InterpolatedRatingTable: A table containing a row for each passed input.
+        """        
         input_set = set(passed_inputs) | set(self.index)
         expanded_table = self.reindex(list(input_set))
         expanded_table = expanded_table.sort_index()
         
         # interpolate
-        kw = dict(method='from_derivatives', order = 1, extrapolate = True, fill_value="extrapolate", limit_direction="both")
+        kw = dict(
+            method='from_derivatives',
+            order = 1,
+            extrapolate = True,
+            fill_value="extrapolate",
+            limit_direction="both"
+        )
         # kw = dict(method="spline", order = 1, fill_value="extrapolate", limit_direction="both")
         lookup_table = expanded_table.interpolate(**kw)
 
         return lookup_table
 
     def _eval_table(self, input_table):
+        """Performs the interpolation given a table of inputs.
+
+        Args:
+            input_table (DataFrame): The table containing input attributes.
+
+        Returns:
+            DataFrame: The results.
+        """        
         # reorder input columns
         passed_inputs = input_table.loc[:, self.inputs]
 
@@ -640,7 +792,11 @@ class InterpolatedRatingTable(BaseRatingTable):
         return results
     
     def _eval_single(self, *args, **kwargs):
-        
+        """Performs interpolation for a single input.
+
+        Returns:
+            Dict: A dictionary of the returned row.
+        """        
         # First convert non-keyword arguments to a dict
         if args:
             assert len(args) == 1, 'Too many inputs for an interpolated table.'
