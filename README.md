@@ -216,6 +216,7 @@ Two methods exist for easily creating a market basket:
         a record that has both a senior driving discount and a youthful driver
         status.
     <a name="mbgenerator"></a>
+    
         >>> from gzmo.rating.utils import make_random_market_basket
         >>> random_mb = make_random_market_basket(rating_plan, 1000)
         
