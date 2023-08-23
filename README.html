@@ -352,11 +352,12 @@ needed for the rating plan.</p>
 <p>The function will check all tables for input constraints, and will not
 create records with impossible inputs. For example, it will not create
 a record that has both a senior driving discount and a youthful driver
-status.
+status.</p>
 <a name="mbgenerator"></a>
+<pre><code>
 &gt;&gt;&gt; from gzmo.rating.utils import make_random_market_basket
-&gt;&gt;&gt; random_mb = make_random_market_basket(rating_plan, 1000)</p>
-<pre><code>&gt;&gt;&gt; print(random_mb.head())
+&gt;&gt;&gt; random_mb = make_random_market_basket(rating_plan, 1000)
+&gt;&gt;&gt; print(random_mb.head())
 prior_insurance_code  amount_of_insurance  credit_score  pni_age
 0                    A               110000           462       60
 1                    B               185000           764       37
