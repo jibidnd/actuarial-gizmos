@@ -70,7 +70,7 @@ And the package will do the rest:
         [61 rows x 1 columns]
 
         >>> rating_plan['credit_tier_placement'].evaluate({'credit_score': 795, 'pni_age': 25})
-        {'credit_tier': 'I1'}
+        {'credit_tier': 'A1'}
 
 
     </details>
