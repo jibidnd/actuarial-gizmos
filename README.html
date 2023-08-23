@@ -300,6 +300,7 @@ dict_keys(['base_rates', 'credit_tier_factor', 'amount_of_insurance_factor', 'cr
 <p>Specifying <code>parallel = True</code> in <code>RatingPlan.rate</code> will utilize the multiple processors on your machine, and concurrently run rating steps that do not depend on each other.</p>
 <p>Let's see how long it takes to run a simple rate plan on 100,000 records.
 First make a market basket (see <a href="#mbgenerator">Market Basket Generator</a>)</p>
+	
 <pre><code>&gt;&gt;&gt; num_samples = 100000
 &gt;&gt;&gt; random_mb = make_random_market_basket(rating_plan, num_samples)
 </code></pre>
